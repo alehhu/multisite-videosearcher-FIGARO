@@ -1,0 +1,58 @@
+# grep: started, scaled and stopped by the local controller according to the placement.
+# `replicas` is deliberately not set: re-applying the manifests must not override the
+# controller (a fresh deployment starts with 1 replica, which the controller stops if
+# grep is not placed on this site).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grep-deployment
+  labels:
+    app: grep-function
+    tier: pipeline
+spec:
+  selector:
+    matchLabels:
+      app: grep-function
+  template:
+    metadata:
+      labels:
+        app: grep-function
+        tier: pipeline
+    spec:
+      # On SIGTERM the worker finishes the jobs already assigned to it before exiting.
+      terminationGracePeriodSeconds: 600
+      containers:
+      - name: grep
+        image: grep:latest
+        imagePullPolicy: IfNotPresent
+        command: ["python3", "/opt/videosearcher/function.py"]
+        env:
+        - name: STAGE
+          value: grep
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        envFrom:
+        - configMapRef:
+            name: site-config
+        # Ready only once the broker confirmed the job subscription (see pipeline_worker.py).
+        readinessProbe:
+          exec:
+            command: ["test", "-f", "/tmp/worker-ready"]
+          periodSeconds: 2
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "64Mi"
+          limits:
+            cpu: "1000m"
+            memory: "128Mi"
+        volumeMounts:
+        - name: ramdisk
+          mountPath: /mnt/ramdisk
+      volumes:
+      - name: ramdisk
+        hostPath:
+          path: /mnt/ramdisk
+          type: DirectoryOrCreate

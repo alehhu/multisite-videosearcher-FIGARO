@@ -1,0 +1,41 @@
+# Lives with the gateway: completed (done) and failed (dlq) jobs arrive here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: timing-collector
+  labels:
+    app: timing-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: timing-collector
+  template:
+    metadata:
+      labels:
+        app: timing-collector
+    spec:
+      containers:
+      - name: timing-collector
+        image: timing-collector:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MQTT_TOPIC
+          value: pipeline/edge/done,pipeline/edge/dlq
+        - name: LOG_DIR
+          value: /var/log/multisite
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        volumeMounts:
+        - name: logs
+          mountPath: /var/log/multisite
+      volumes:
+      - name: logs
+        hostPath:
+          path: /var/log/multisite
+          type: DirectoryOrCreate

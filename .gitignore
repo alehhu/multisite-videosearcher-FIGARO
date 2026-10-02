@@ -7,3 +7,4 @@ venv/
 seed/
 logs/
 results/
+tests/integration/.run/

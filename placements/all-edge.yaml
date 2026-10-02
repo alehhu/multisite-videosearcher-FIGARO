@@ -1,0 +1,3 @@
+# Every stage at the edge (Modena). Jobs cross the WAN only client -> edge.
+gateway: edge
+stages: {ffmpeg0: edge, librosa: edge, ffmpeg1: edge, ffmpeg2: edge, deepspeech: edge, grep: edge}

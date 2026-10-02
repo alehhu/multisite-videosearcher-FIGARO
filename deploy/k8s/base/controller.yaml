@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: local-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: local-controller
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: local-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: local-controller
+subjects:
+- kind: ServiceAccount
+  name: local-controller
+---
+# Node CPU (site utilization) is cluster-scoped.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: multisite-local-controller-nodes
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: multisite-local-controller-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: multisite-local-controller-nodes
+subjects:
+- kind: ServiceAccount
+  name: local-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: local-controller
+  labels:
+    app: local-controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: local-controller
+  template:
+    metadata:
+      labels:
+        app: local-controller
+    spec:
+      serviceAccountName: local-controller
+      containers:
+      - name: controller
+        image: local-controller:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CONTROLLER_CONFIG
+          value: /etc/controller/config.yaml
+        - name: LOG_DIR
+          value: /var/log/multisite
+        envFrom:
+        - configMapRef:
+            name: site-config
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/controller
+        - name: logs
+          mountPath: /var/log/multisite
+      volumes:
+      - name: config
+        configMap:
+          name: controller-config
+      - name: logs
+        hostPath:
+          path: /var/log/multisite
+          type: DirectoryOrCreate

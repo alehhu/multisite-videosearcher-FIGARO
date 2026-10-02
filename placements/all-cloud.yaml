@@ -1,0 +1,3 @@
+# Gateway at the edge, every stage in the cloud (Milano): edge -> cloud -> edge (done).
+gateway: edge
+stages: {ffmpeg0: cloud, librosa: cloud, ffmpeg1: cloud, ffmpeg2: cloud, deepspeech: cloud, grep: cloud}

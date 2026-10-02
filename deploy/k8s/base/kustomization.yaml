@@ -1,0 +1,20 @@
+# Shared by both sites. The overlays add the site name (site-config) and, at the edge,
+# the gateway and the timing collector.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- mosquitto.yaml
+- controller.yaml
+- stages/ffmpeg0.yaml
+- stages/librosa.yaml
+- stages/ffmpeg1.yaml
+- stages/ffmpeg2.yaml
+- stages/deepspeech.yaml
+- stages/grep.yaml
+configMapGenerator:
+- name: mosquitto-config
+  files:
+  - mosquitto.conf
+- name: controller-config
+  files:
+  - config.yaml=controller-config.yaml

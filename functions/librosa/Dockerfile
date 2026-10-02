@@ -20,6 +20,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application and onnx models
 COPY ./functions/librosa/ /opt/videosearcher/
-COPY ./functions/common/pipeline_worker.py /opt/videosearcher/
+COPY ./common/*.py /opt/videosearcher/
 
 CMD ["python3", "/opt/videosearcher/function.py"]

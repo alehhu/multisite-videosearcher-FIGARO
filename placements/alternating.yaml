@@ -1,0 +1,3 @@
+# Worst case for the WAN: the site changes at every stage.
+gateway: edge
+stages: {ffmpeg0: edge, librosa: cloud, ffmpeg1: edge, ffmpeg2: cloud, deepspeech: edge, grep: cloud}

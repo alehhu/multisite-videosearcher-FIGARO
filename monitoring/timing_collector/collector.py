@@ -7,7 +7,7 @@ import paho.mqtt.client as mqtt
 
 MQTT_BROKER = os.getenv("MQTT_BROKER", "mosquitto-service")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-MQTT_TOPIC = os.getenv("MQTT_TOPIC", "pipeline/done")
+MQTT_TOPIC = os.getenv("MQTT_TOPIC", "pipeline/edge/done")
 MQTT_CONNECT_RETRY_SECONDS = float(os.getenv("MQTT_CONNECT_RETRY_SECONDS", "5"))
 
 LOG_DIR = os.getenv("LOG_DIR", "/var/log/pipeline-timings")
@@ -23,8 +23,26 @@ STAGE_MAP = {
 }
 
 
-def compute_stage_records(timestamps):
+def _as_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def compute_stage_records(timestamps, sites=None, pods=None, placement_versions=None):
+    """One record per completed stage.
+
+    `wait` is the time between the previous stage publishing the job and this stage
+    starting it: queueing in the broker plus, when the two stages are on different
+    sites, the WAN hop and the seed copy. It mixes clocks of two machines, so it is only
+    meaningful with synchronised clocks (chrony).
+    """
+    sites = sites or {}
+    pods = pods or {}
+    placement_versions = placement_versions or {}
     records = []
+    previous_published = _as_float(timestamps.get("gateway_published"))
     for group, stage in STAGE_MAP.items():
         start_key = f"{group}_start"
         end_key = f"{group}_end"
@@ -36,15 +54,27 @@ def compute_stage_records(timestamps):
             duration = float(end) - float(start)
         except (TypeError, ValueError):
             continue
-        records.append(
-            {
-                "group": group,
-                "stage": stage,
-                "start": start,
-                "end": end,
-                "duration": duration,
-            }
-        )
+        record = {
+            "group": group,
+            "stage": stage,
+            "start": start,
+            "end": end,
+            "duration": duration,
+        }
+        if stage in sites:
+            record["site"] = sites[stage]
+        if stage in pods:
+            record["pod"] = pods[stage]
+        if stage in placement_versions:
+            record["placement_version"] = placement_versions[stage]
+        seed_start = _as_float(timestamps.get(f"{group}_seed_start"))
+        seed_end = _as_float(timestamps.get(f"{group}_seed_end"))
+        if seed_start is not None and seed_end is not None:
+            record["seed_copy"] = seed_end - seed_start
+        if previous_published is not None:
+            record["wait"] = float(start) - previous_published
+        records.append(record)
+        previous_published = _as_float(timestamps.get(f"{group}_published"))
     return records
 
 
@@ -57,8 +87,10 @@ def append_record(record):
 
 def on_connect(client, userdata, flags, rc, props=None):
     print(f"[TimingCollector] Connected to MQTT broker with result code: {rc}")
-    client.subscribe(MQTT_TOPIC, qos=1)
-    print(f"[TimingCollector] Subscribed to {MQTT_TOPIC}")
+    # MQTT_TOPIC may list several topics, comma-separated (e.g. done and dlq).
+    for topic in MQTT_TOPIC.split(","):
+        client.subscribe(topic.strip(), qos=1)
+        print(f"[TimingCollector] Subscribed to {topic.strip()}")
 
 
 def on_message(client, userdata, msg, props=None):
@@ -69,7 +101,12 @@ def on_message(client, userdata, msg, props=None):
         return
 
     timestamps = payload.get("timestamps") or {}
-    stage_records = compute_stage_records(timestamps)
+    stage_records = compute_stage_records(
+        timestamps,
+        sites=payload.get("sites"),
+        pods=payload.get("pods"),
+        placement_versions=payload.get("placement_versions"),
+    )
 
     durations = {}
     for record in stage_records:
@@ -81,6 +118,10 @@ def on_message(client, userdata, msg, props=None):
         "topic": msg.topic,
         "logged_at": time.time(),
         "timestamps": timestamps,
+        "sites": payload.get("sites", {}),
+        "pods": payload.get("pods", {}),
+        "placement_versions": payload.get("placement_versions", {}),
+        "error": payload.get("error"),
         "stages": stage_records,
         "durations": durations,
     }

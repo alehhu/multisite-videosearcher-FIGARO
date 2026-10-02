@@ -1,0 +1,58 @@
+# ffmpeg2: started, scaled and stopped by the local controller according to the placement.
+# `replicas` is deliberately not set: re-applying the manifests must not override the
+# controller (a fresh deployment starts with 1 replica, which the controller stops if
+# ffmpeg2 is not placed on this site).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ffmpeg2-deployment
+  labels:
+    app: ffmpeg2-function
+    tier: pipeline
+spec:
+  selector:
+    matchLabels:
+      app: ffmpeg2-function
+  template:
+    metadata:
+      labels:
+        app: ffmpeg2-function
+        tier: pipeline
+    spec:
+      # On SIGTERM the worker finishes the jobs already assigned to it before exiting.
+      terminationGracePeriodSeconds: 1800
+      containers:
+      - name: ffmpeg2
+        image: ffmpeg2:latest
+        imagePullPolicy: IfNotPresent
+        command: ["python3", "/opt/videosearcher/function.py"]
+        env:
+        - name: STAGE
+          value: ffmpeg2
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        envFrom:
+        - configMapRef:
+            name: site-config
+        # Ready only once the broker confirmed the job subscription (see pipeline_worker.py).
+        readinessProbe:
+          exec:
+            command: ["test", "-f", "/tmp/worker-ready"]
+          periodSeconds: 2
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "64Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: ramdisk
+          mountPath: /mnt/ramdisk
+      volumes:
+      - name: ramdisk
+        hostPath:
+          path: /mnt/ramdisk
+          type: DirectoryOrCreate

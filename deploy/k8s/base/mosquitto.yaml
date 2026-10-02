@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mosquitto-deployment
+  labels:
+    app: mosquitto
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mosquitto
+  template:
+    metadata:
+      labels:
+        app: mosquitto
+    spec:
+      containers:
+      - name: mosquitto
+        image: eclipse-mosquitto:2.0
+        ports:
+        - containerPort: 1883
+          name: mqtt
+        volumeMounts:
+        - name: config
+          mountPath: /mosquitto/config/mosquitto.conf
+          subPath: mosquitto.conf
+        - name: bridge
+          mountPath: /mosquitto/config/bridge
+        - name: data
+          mountPath: /mosquitto/data
+      volumes:
+      - name: config
+        configMap:
+          name: mosquitto-config
+      # Created by scripts/deploy-site.sh only on the site that opens the bridge;
+      # elsewhere the directory stays empty.
+      - name: bridge
+        configMap:
+          name: mosquitto-bridge
+          optional: true
+      # Retained placement and status survive broker container restarts. If the pod is
+      # recreated they are lost: re-run `scripts/placement.py publish` with the same file.
+      - name: data
+        emptyDir: {}
+---
+# NodePort: the other site's bridge and the placement coordinator connect from outside.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mosquitto-service
+spec:
+  type: NodePort
+  selector:
+    app: mosquitto
+  ports:
+  - protocol: TCP
+    port: 1883
+    targetPort: 1883
+    nodePort: 31883

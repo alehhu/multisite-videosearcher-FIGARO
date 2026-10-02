@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 # === Constants ===
-HOST            = os.getenv("MINIKUBE_IP", "192.168.49.2")  # Minikube node IP
+HOST            = os.getenv("GATEWAY_HOST", "localhost")  # edge node (gateway NodePort)
 PORT            = int(os.getenv("GATEWAY_PORT", "30080"))   # Gateway NodePort
 WORKFLOW_NAME   = "videosearcher_workflow"
 
@@ -20,7 +20,6 @@ WORKFLOW_NAME   = "videosearcher_workflow"
 # List to store request timestamps
 request_timestamps = []
 
-_pod_logger_proc = None
 
 # # === Precompute the RPS pattern ===
 np.random.seed(22222121)  # for reproducibility
@@ -67,8 +66,6 @@ def save_request_log():
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
     save_request_log()
-    if _pod_logger_proc is not None:
-        _pod_logger_proc.terminate()
 
 class SinusoidalUser(HttpUser):
     wait_time = between(0, 0)  # we control timing manually
@@ -103,8 +100,7 @@ class SinusoidalUser(HttpUser):
 
         # Schedule all requests
         start_time = time.time()
-        global _pod_logger_proc
-        _pod_logger_proc = subprocess.Popen(["python3", "pod_logger.py", "pod_counts.csv"])
+        # Pod counts are logged by the local controller of each site (pods.csv).
 
         for request_time in all_request_times:
             if request_time < SECONDS:  # Only schedule requests within our time window

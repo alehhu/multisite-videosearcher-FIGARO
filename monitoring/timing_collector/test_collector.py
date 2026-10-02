@@ -170,3 +170,27 @@ def test_build_client_sets_handlers_and_reconnect_delay(monkeypatch):
     assert client.reconnect_delay == (1, 30)
     assert client.on_connect is collector.on_connect
     assert client.on_message is collector.on_message
+
+
+def test_stage_records_carry_site_pod_and_wait():
+    timestamps = {
+        "gateway_published": 10.0,
+        "groupA_start": 10.5, "groupA_end": 11.0, "groupA_published": 11.1,
+        "groupB_seed_start": 11.3, "groupB_seed_end": 11.4,
+        "groupB_start": 11.6, "groupB_end": 12.0,
+    }
+    records = collector.compute_stage_records(
+        timestamps,
+        sites={"ffmpeg0": "edge", "librosa": "cloud"},
+        pods={"ffmpeg0": "ffmpeg0-abc", "librosa": "librosa-xyz"},
+        placement_versions={"ffmpeg0": 2},
+    )
+
+    ffmpeg0, librosa = records
+    assert ffmpeg0["site"] == "edge" and ffmpeg0["pod"] == "ffmpeg0-abc"
+    assert ffmpeg0["placement_version"] == 2
+    assert ffmpeg0["wait"] == pytest.approx(0.5)  # gateway publish -> ffmpeg0 start
+    assert "seed_copy" not in ffmpeg0
+    assert librosa["site"] == "cloud"
+    assert librosa["wait"] == pytest.approx(0.5)  # ffmpeg0 publish -> librosa start
+    assert librosa["seed_copy"] == pytest.approx(0.1)

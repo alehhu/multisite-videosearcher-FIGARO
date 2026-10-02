@@ -10,9 +10,12 @@ for stage in "${STAGES[@]}"; do
 done
 
 echo "Building gateway:latest"
-docker build -t gateway:latest -f gateway/Dockerfile gateway/
+docker build -t gateway:latest -f gateway/Dockerfile .
 
 echo "Building timing-collector:latest"
 docker build -t timing-collector:latest -f monitoring/timing_collector/Dockerfile monitoring/timing_collector/
+
+echo "Building local-controller:latest"
+docker build -t local-controller:latest -f controller/Dockerfile .
 
 echo "All images built."

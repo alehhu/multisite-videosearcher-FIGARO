@@ -34,6 +34,6 @@ RUN set -e; \
 
 # Copy application and onnx models
 COPY ./functions/deepspeech/ /opt/videosearcher/
-COPY ./functions/common/pipeline_worker.py /opt/videosearcher/
+COPY ./common/*.py /opt/videosearcher/
 
 CMD ["python3", "/opt/videosearcher/function.py"]

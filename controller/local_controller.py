@@ -1,0 +1,422 @@
+"""Local controller: one per site, talks only to its own cluster and its own broker.
+
+Responsibilities:
+  1. Placement transitions, make-before-break:
+       - on a *pending* placement, start the stages that move onto this site and, once
+         they are ready, ack it on control/status/<site>;
+       - on the *current* placement, drain the stages that left this site (wait until every
+         job that entered them here has come out) and only then scale them to zero.
+  2. Autoscaling surface: stages with an `hpa` block get an HPA while they run here;
+     the others get a fixed number of replicas.
+  3. Measurements, written under LOG_DIR:
+       pods.csv          desired / ready / alive / terminating replicas per stage
+       transitions.jsonl every step of every placement change
+       observations.jsonl agent-ready state (DQN per stage, master per site), also
+                          published on observations/<site>. Recorded only: no agent is called yet.
+"""
+
+import csv
+import json
+import os
+import sys
+import threading
+import time
+
+import yaml
+
+import multisite
+from multisite import GROUPS, STAGES, Placement
+
+
+def log(*args):
+    print(time.strftime("[%Y-%m-%d %H:%M:%S]"), *args, flush=True)
+
+
+class StageWindow:
+    """Measurements of one stage on this site over one observation window."""
+
+    def __init__(self):
+        self.arrivals = 0
+        self.service_times = []
+        self.response_times = []
+        self.ready_samples = []
+        self.alive_samples = []
+        self.cpu_samples = []
+
+
+class LocalController:
+
+    def __init__(self, site, config, backend, mqtt_host=None, mqtt_port=None, log_dir="logs"):
+        self.site = site
+        self.config = config
+        self.backend = backend
+        self.stage_cfg = config["stages"]
+        self.sample_interval = config.get("sample_interval_s", 5)
+        self.observation_interval = config.get("observation_interval_s", 120)
+        self.drain_quiet = config.get("drain_quiet_s", 10)
+        self.drain_timeout = config.get("drain_timeout_s", 1800)
+        self.ready_timeout = config.get("ready_timeout_s", 600)
+
+        self.lock = threading.RLock()
+        self.current = None          # Placement in force
+        self.pending = None          # Placement announced, not yet in force
+        self.acked_version = 0
+        self.waiting_ready = {}      # stage -> time scale-up was requested (pending placement)
+        self.draining = {}           # stage -> {"since": t, "version": v}
+
+        # Jobs that entered a stage on this site and have not come out yet: stage -> {job: t}
+        self.in_flight = {s: {} for s in STAGES}
+        self.last_arrival = {s: 0.0 for s in STAGES}
+        self.window = {s: StageWindow() for s in STAGES}
+        self.window_start = time.time()
+        self.lambda_arrivals = 0     # new jobs published by the gateway (gateway site only)
+
+        os.makedirs(log_dir, exist_ok=True)
+        self.transitions_path = os.path.join(log_dir, "transitions.jsonl")
+        self.observations_path = os.path.join(log_dir, "observations.jsonl")
+        pods_path = os.path.join(log_dir, "pods.csv")
+        new_file = not os.path.exists(pods_path)
+        self.pods_file = open(pods_path, "a", newline="")
+        self.pods_csv = csv.writer(self.pods_file)
+        if new_file:
+            self.pods_csv.writerow(["timestamp", "site", "stage", "placed_here", "draining",
+                                    "desired", "ready", "alive", "terminating", "hpa"])
+
+        self.client = multisite.make_client()
+        self.client.on_connect = self._on_connect
+        self.client.on_message = self._on_message
+        self.mqtt_host = mqtt_host
+        self.mqtt_port = mqtt_port
+
+    # MQTT
+
+    def _on_connect(self, client, userdata, flags, rc, props=None):
+        client.subscribe(multisite.PLACEMENT_TOPIC, qos=1)
+        client.subscribe(multisite.PLACEMENT_PENDING_TOPIC, qos=1)
+        # Plain (non-shared) subscription: the controller observes every job message on
+        # its broker without taking it away from the workers.
+        client.subscribe("pipeline/#", qos=1)
+        log(f"[controller@{self.site}] connected")
+        self._publish_status()
+
+    def _on_message(self, client, userdata, msg, props=None):
+        try:
+            if msg.topic == multisite.PLACEMENT_TOPIC:
+                if msg.payload:
+                    self._on_current(Placement.from_json(msg.payload))
+            elif msg.topic == multisite.PLACEMENT_PENDING_TOPIC:
+                if msg.payload:
+                    self._on_pending(Placement.from_json(msg.payload))
+            else:
+                self._on_job_message(msg)
+        except Exception as exc:  # never let a bad message kill the network thread
+            log(f"[controller@{self.site}] error handling {msg.topic}: {exc!r}")
+
+    def _publish_status(self):
+        with self.lock:
+            status = {
+                "site": self.site,
+                "acked_version": self.acked_version,
+                "current_version": self.current.version if self.current else 0,
+                "draining": sorted(self.draining),
+                "starting": sorted(self.waiting_ready),
+                "t": time.time(),
+            }
+        self.client.publish(multisite.status_topic(self.site), json.dumps(status), qos=1, retain=True)
+
+    # Job tracking
+
+    def _on_job_message(self, msg):
+        parsed = multisite.parse_topic(msg.topic)
+        if parsed is None:
+            return
+        dest_site, target = parsed
+        payload = json.loads(msg.payload.decode())
+        job = payload.get("dir")
+        if not job:
+            return
+        sites = payload.get("sites", {})
+        now = time.time()
+
+        with self.lock:
+            # Arrival: a job addressed to a stage of this site.
+            if dest_site == self.site and target in STAGES:
+                self.in_flight[target][job] = now
+                self.last_arrival[target] = now
+                self.window[target].arrivals += 1
+            # New job from the gateway of this site (wherever the first stage runs).
+            if target == STAGES[0] and sites.get("gateway") == self.site:
+                self.lambda_arrivals += 1
+
+            # Departure: the message is the output of the stage before `target`.
+            if target in STAGES:
+                finished = multisite.previous_stage(target)
+            elif target == "done":
+                finished = STAGES[-1]
+            elif target == "dlq":
+                finished = (payload.get("error") or {}).get("stage")
+            else:
+                finished = None
+            if finished and sites.get(finished) == self.site:
+                self.in_flight[finished].pop(job, None)
+                if target != "dlq":
+                    self._record_completion(finished, payload.get("timestamps", {}))
+
+    def _record_completion(self, stage, ts):
+        group = GROUPS[stage]
+        start, end = ts.get(f"{group}_start"), ts.get(f"{group}_end")
+        if start is None or end is None:
+            return
+        prev = multisite.previous_stage(stage)
+        prev_published = ts.get(f"{GROUPS[prev]}_published") if prev else ts.get("gateway_published")
+        w = self.window[stage]
+        w.service_times.append(end - start)
+        if prev_published is not None:
+            # Queueing + (if the previous stage is remote) WAN hop and seed copy + service.
+            w.response_times.append(end - prev_published)
+
+    # Placement transitions
+
+    def _on_pending(self, placement):
+        with self.lock:
+            if placement.version <= self.acked_version:
+                return
+            if self.current is not None and placement.version <= self.current.version:
+                return
+            self.pending = placement
+            incoming = [s for s in placement.stages_on(self.site)
+                        if self.current is None or self.current.site_of(s) != self.site
+                        or s in self.draining]
+            self.waiting_ready = {}
+            for stage in incoming:
+                if stage in self.draining:
+                    # Moving back here before the drain finished: keep it running.
+                    del self.draining[stage]
+                    self._event(placement.version, stage, "drain_cancelled")
+                self._activate(stage)
+                self.waiting_ready[stage] = time.time()
+                self._event(placement.version, stage, "start_requested")
+            log(f"[controller@{self.site}] pending v{placement.version}, starting {incoming}")
+        self._check_ready()
+
+    def _on_current(self, placement):
+        with self.lock:
+            if self.current is not None and placement.version <= self.current.version:
+                return
+            previous = self.current
+            self.current = placement
+            self.pending = None
+            self.waiting_ready = {}
+            self._event(placement.version, None, "placement_in_force")
+            for stage in STAGES:
+                here_now = placement.site_of(stage) == self.site
+                if here_now:
+                    # Normally started during the pending phase; this also covers a
+                    # controller that (re)started after the pending message.
+                    self.draining.pop(stage, None)
+                    self._activate(stage)
+                elif previous is not None and previous.site_of(stage) == self.site:
+                    self.draining[stage] = {"since": time.time(), "version": placement.version}
+                    self._event(placement.version, stage, "drain_started",
+                                in_flight=len(self.in_flight[stage]))
+                elif previous is None and self.backend.desired(stage) > 0:
+                    # Controller started with replicas left over from an earlier run.
+                    self.draining[stage] = {"since": time.time(), "version": placement.version}
+                    self._event(placement.version, stage, "drain_started", reason="leftover")
+            log(f"[controller@{self.site}] placement v{placement.version} in force, "
+                f"here={placement.stages_on(self.site)} draining={sorted(self.draining)}")
+        self._publish_status()
+
+    def _activate(self, stage):
+        cfg = self.stage_cfg[stage]
+        hpa = cfg.get("hpa")
+        if hpa:
+            if self.backend.desired(stage) < hpa["min"]:
+                self.backend.scale(stage, hpa["min"])
+            self.backend.ensure_hpa(stage, hpa)
+        else:
+            if self.backend.desired(stage) == 0:
+                self.backend.scale(stage, cfg.get("replicas", 1))
+
+    def _deactivate(self, stage):
+        self.backend.delete_hpa(stage)
+        self.backend.scale(stage, 0)
+
+    def _check_ready(self):
+        acked = False
+        with self.lock:
+            if self.pending is None:
+                return
+            now = time.time()
+            for stage, since in list(self.waiting_ready.items()):
+                if self.backend.ready(stage) >= 1:
+                    del self.waiting_ready[stage]
+                    self._event(self.pending.version, stage, "ready", after_s=round(now - since, 3))
+                elif now - since > self.ready_timeout:
+                    self._event(self.pending.version, stage, "ready_timeout")
+            if not self.waiting_ready and self.acked_version < self.pending.version:
+                self.acked_version = self.pending.version
+                self._event(self.pending.version, None, "acked")
+                acked = True
+        if acked:
+            self._publish_status()
+
+    def _check_drains(self):
+        finished = []
+        with self.lock:
+            now = time.time()
+            for stage, info in list(self.draining.items()):
+                pending_jobs = len(self.in_flight[stage])
+                quiet = now - max(self.last_arrival[stage], info["since"]) >= self.drain_quiet
+                timed_out = now - info["since"] > self.drain_timeout
+                if (pending_jobs == 0 and quiet) or timed_out:
+                    self._deactivate(stage)
+                    del self.draining[stage]
+                    self._event(info["version"], stage, "drain_timeout" if timed_out else "drained",
+                                after_s=round(now - info["since"], 3), lost_in_flight=pending_jobs)
+                    self.in_flight[stage].clear()
+                    finished.append(stage)
+        if finished:
+            self._publish_status()
+
+    def _event(self, version, stage, event, **extra):
+        record = {"t": time.time(), "site": self.site, "version": version, "stage": stage,
+                  "event": event, **extra}
+        with open(self.transitions_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+        log(f"[controller@{self.site}] v{version} {stage or '-'}: {event} {extra or ''}")
+
+    # Sampling and observations
+
+    def _sample(self):
+        now = time.time()
+        snapshot = self.backend.snapshot()  # stage -> desired/ready/alive/terminating/hpa
+        cpu = self.backend.cpu_per_stage()  # stage -> mean CPU usage / limit of its pods
+        with self.lock:
+            for stage in STAGES:
+                snap = snapshot[stage]
+                ready, alive = snap["ready"], snap["alive"]
+                placed = self.current is not None and self.current.site_of(stage) == self.site
+                self.pods_csv.writerow([now, self.site, stage, int(placed), int(stage in self.draining),
+                                        snap["desired"], ready, alive, snap["terminating"],
+                                        int(snap["hpa"])])
+                if placed or alive:
+                    w = self.window[stage]
+                    w.ready_samples.append(ready)
+                    w.alive_samples.append(alive)
+                    if stage in cpu:
+                        w.cpu_samples.append(cpu[stage])
+        self.pods_file.flush()
+
+    def _observe(self):
+        """Close the window and compute the state the agents expect.
+
+        Per stage: the observation of the DQN agents (Pozzani's RLAgent.update_data /
+        normalize_state). Per site: Lambda and utilization for the FIGARO master agent.
+        """
+        norm = self.config.get("normalization", {})
+        now = time.time()
+        with self.lock:
+            elapsed = max(now - self.window_start, 1e-9)
+            stages = {}
+            for stage in STAGES:
+                w = self.window[stage]
+                placed = self.current is not None and self.current.site_of(stage) == self.site
+                if not placed and not w.alive_samples:
+                    continue
+                stages[stage] = self._stage_observation(stage, w, elapsed, norm)
+            lambda_rate = self.lambda_arrivals / elapsed if (
+                self.current is not None and self.current.gateway == self.site) else None
+            record = {
+                "t": now,
+                "site": self.site,
+                "window_s": round(elapsed, 3),
+                "placement_version": self.current.version if self.current else 0,
+                "lambda": lambda_rate,
+                "site_utilization": self.backend.site_utilization(),
+                "stages": stages,
+            }
+            self.window = {s: StageWindow() for s in STAGES}
+            self.window_start = now
+            self.lambda_arrivals = 0
+        with open(self.observations_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+        self.client.publish(multisite.observations_topic(self.site), json.dumps(record), qos=1)
+
+    def _stage_observation(self, stage, w, elapsed, norm):
+        mean = lambda xs: sum(xs) / len(xs) if xs else 0.0
+        workload = w.arrivals / elapsed
+        service_time = mean(w.service_times)
+        response_time = mean(w.response_times)
+        n_instances = mean(w.ready_samples)
+        threshold = self.stage_cfg[stage].get("res_time_threshold", 0)
+        theoretical_utilization = min(workload * service_time / n_instances, 1.0) if n_instances > 0 else 0.0
+        raw = {
+            "workload": workload,
+            "service_time": service_time,
+            "response_time": response_time,
+            "n_instances": n_instances,
+            "n_alive": mean(w.alive_samples),
+            "docker_utilization": min(mean(w.cpu_samples), 1.0),
+            "theoretical_utilization": theoretical_utilization,
+            "pressure": response_time / threshold if threshold > 0 else 0.0,
+            "queue_length_dominant": (response_time - service_time) / service_time if service_time > 0 else 0.0,
+            "arrivals": w.arrivals,
+            "completions": len(w.service_times),
+        }
+        # Same normalisation as ServerlessAutoscalingWithRL/figaro/controller/rlagent.py.
+        max_workload = norm.get("max_workload", 0.25)
+        max_n = norm.get("max_n_instances", 10)
+        p_clip = norm.get("pressure_clip", 3)
+        q_clip = norm.get("queue_length_clip", 10)
+        observation = {
+            "n_instances": raw["n_instances"] / max_n,
+            "utilization": raw["theoretical_utilization"],
+            "pressure": max(0.0, min(raw["pressure"], p_clip)) / p_clip,
+            "queue_length_dominant": max(0.0, min(raw["queue_length_dominant"], q_clip)) / q_clip,
+            "workload": min(1.0, raw["workload"] / max_workload),
+        }
+        return {"raw": raw, "observation": observation}
+
+    # Main loop
+
+    def run(self, stop_event=None):
+        stop_event = stop_event or threading.Event()
+        multisite.connect(self.client, self.mqtt_host, self.mqtt_port)
+        self.client.loop_start()
+        next_observation = time.time() + self.observation_interval
+        while not stop_event.is_set():
+            started = time.time()
+            try:
+                self._check_ready()
+                self._check_drains()
+                self._sample()
+                if started >= next_observation:
+                    self._observe()
+                    next_observation += self.observation_interval
+            except Exception as exc:
+                log(f"[controller@{self.site}] loop error: {exc!r}")
+            stop_event.wait(max(0.0, self.sample_interval - (time.time() - started)))
+        self.client.loop_stop()
+        self.client.disconnect()
+        self.pods_file.close()
+
+
+def main():
+    from kube_backend import KubeBackend
+
+    site = os.environ["SITE"]
+    with open(os.getenv("CONTROLLER_CONFIG", "/etc/controller/config.yaml")) as f:
+        config = yaml.safe_load(f)
+    backend = KubeBackend(os.getenv("NAMESPACE", "default"), config["stages"])
+    controller = LocalController(
+        site, config, backend,
+        mqtt_host=os.getenv("MQTT_BROKER", "mosquitto-service"),
+        mqtt_port=int(os.getenv("MQTT_PORT", "1883")),
+        log_dir=os.getenv("LOG_DIR", "/var/log/multisite"),
+    )
+    controller.run()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,27 @@
+# Local controller configuration (same file on both sites).
+sample_interval_s: 5          # pod state / CPU sampling and drain checks
+observation_interval_s: 120   # agent observation window (Pozzani's AGENT_INTERVAL)
+drain_quiet_s: 10             # no arrivals for this long before a drained stage is stopped
+drain_timeout_s: 1800         # stop a draining stage anyway after this long (logged)
+ready_timeout_s: 600          # logged if a starting stage is not ready by then
+
+# Thresholds come from ServerlessAutoscalingWithRL/figaro/controller/config.py (single node,
+# full video): they only scale `pressure` and must be recalibrated on the two-site setup.
+stages:
+  ffmpeg0:    {deployment: ffmpeg0-deployment,    app_label: ffmpeg0-function,    replicas: 1, res_time_threshold: 2.03}
+  librosa:    {deployment: librosa-deployment,    app_label: librosa-function,    replicas: 1, res_time_threshold: 6.00}
+  ffmpeg1:    {deployment: ffmpeg1-deployment,    app_label: ffmpeg1-function,    replicas: 1, res_time_threshold: 2.08}
+  ffmpeg2:
+    deployment: ffmpeg2-deployment
+    app_label: ffmpeg2-function
+    res_time_threshold: 93.02
+    hpa: {min: 1, max: 6, cpu_target: 60}
+  deepspeech:
+    deployment: deepspeech-deployment
+    app_label: deepspeech-function
+    res_time_threshold: 103.52
+    hpa: {min: 1, max: 6, cpu_target: 60}
+  grep:       {deployment: grep-deployment,       app_label: grep-function,       replicas: 1, res_time_threshold: 0.17}
+
+# Normalisation of the DQN observation (rlagent.py / config.py of ServerlessAutoscalingWithRL).
+normalization: {max_workload: 0.25, max_n_instances: 10, pressure_clip: 3, queue_length_clip: 10}

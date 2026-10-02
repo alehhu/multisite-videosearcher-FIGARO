@@ -71,24 +71,5 @@ def handler(params, context):
     return params
 
 if __name__ == "__main__":
-
-     """
-     A detail that is worth reporting, is that normally in publisher-       subscribers systems, once a publisher sends a message or event, all the    subscribers are being notified. That creates ambiguity for which of the    subscribers actually takes on the job.
-     It is for this reason that we use MQTT v5, and in particular its       "Shared Subscription" feature.
-     Basically, in our experiment pods that belong to the same function     are being treated by Mosquitto as a single entity. Once it notifies that   single entity, there is a built-in algorithm that assignes the job to      just an individual subscriber inside that subscriber group (which          represents an individual function.
-     We want to avoid indeed replicas of the same deployment to take on     the same job, wasting obviously resources.
-
-
-     The individual application (which is going to have multiple instances  of it).
-
-     """
-     worker = PipelineWorker(
-         broker_host     = "mosquitto-service",   # K8s ClusterIP Service   name
-         broker_port     = 1883,
-         subscribe_topic = "pipeline/D",
-         publish_topic   = "pipeline/E",
-         group_name      = "groupD",
-         handler_fn      = handler
-     )
-     worker.run()
-
+    # Stage, site and broker come from the environment (see common/pipeline_worker.py).
+    PipelineWorker.from_env(handler).run()

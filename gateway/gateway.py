@@ -7,24 +7,28 @@ import uuid
 from datetime import datetime
 import os
 
+import multisite
+from multisite import Placement
+
 app = Flask(__name__)
 
 # MQTT Configuration
-MQTT_BROKER = "mosquitto-service"
-MQTT_PORT = 1883
-MQTT_TRIGGER_TOPIC = "pipeline/A"
-MQTT_RESULT_TOPIC = "pipeline/done"
-MQTT_DLQ_TOPIC = "pipeline/dlq"
+MQTT_BROKER = os.getenv("MQTT_BROKER", "mosquitto-service")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+SITE = os.getenv("SITE", "edge")
+MQTT_RESULT_TOPIC = multisite.done_topic(SITE)
+MQTT_DLQ_TOPIC = multisite.dlq_topic(SITE)
+
+# Current placement table; new jobs go to the site that runs the first stage.
+placement = None
+placement_lock = threading.Lock()
 
 # Store for tracking in-flight requests
 pending_requests = {}
 results_lock = threading.Lock()
 
 # MQTT Client setup
-mqtt_client = mqtt.Client(
-    protocol=mqtt.MQTTv5,
-    callback_api_version=mqtt.CallbackAPIVersion.VERSION2
-)
+mqtt_client = multisite.make_client()
 
 def on_connect(client, userdata, flags, rc, props):
     """Callback when connected to MQTT broker"""
@@ -32,10 +36,23 @@ def on_connect(client, userdata, flags, rc, props):
     # Subscribe to result and DLQ topics to track completions
     client.subscribe(MQTT_RESULT_TOPIC, qos=1)
     client.subscribe(MQTT_DLQ_TOPIC, qos=1)
+    client.subscribe(multisite.PLACEMENT_TOPIC, qos=1)
     print(f"[Gateway] Subscribed to {MQTT_RESULT_TOPIC} and {MQTT_DLQ_TOPIC}")
 
 def on_message(client, userdata, msg, props=None):
     """Callback when a message is received"""
+    global placement
+    if msg.topic == multisite.PLACEMENT_TOPIC:
+        try:
+            new_placement = Placement.from_json(msg.payload)
+        except (ValueError, KeyError) as e:
+            print(f"[Gateway] Ignoring invalid placement: {e}")
+            return
+        with placement_lock:
+            if placement is None or new_placement.version > placement.version:
+                placement = new_placement
+                print(f"[Gateway] Placement v{placement.version}: {placement.stages}")
+        return
     try:
         payload = json.loads(msg.payload.decode())
         job_dir = payload.get("dir", "")
@@ -58,7 +75,7 @@ mqtt_client.on_message = on_message
 
 # Start MQTT client in background thread
 def start_mqtt():
-    mqtt_client.connect(MQTT_BROKER, MQTT_PORT)
+    multisite.connect(mqtt_client, MQTT_BROKER, MQTT_PORT)
     mqtt_client.loop_start()
 
 @app.route('/health', methods=['GET'])
@@ -71,6 +88,14 @@ def invoke_workflow(workflow_name):
     """
     HTTP endpoint that receives workflow invocation requests.
     """
+    with placement_lock:
+        current_placement = placement
+    if current_placement is None:
+        return jsonify({
+            "status": "error",
+            "message": "No placement received yet on " + multisite.PLACEMENT_TOPIC
+        }), 503
+
     try:
         request_data = request.get_json()
         params = request_data.get('params', {})
@@ -88,8 +113,11 @@ def invoke_workflow(workflow_name):
             "find_str": search_str,
             "timestamps": {
                 "gateway_received": time.time()
-            }
+            },
+            "sites": {"gateway": SITE},
+            "placement_versions": {"gateway": current_placement.version}
         }
+        _, entry_topic = current_placement.entry()
         
         # Track this request if synchronous
         if not is_async:
@@ -103,8 +131,9 @@ def invoke_workflow(workflow_name):
         
         # Publish to MQTT
         print(f"[Gateway] Triggering workflow '{workflow_name}' with job: {job_dir}, find_str: {search_str}")
+        mqtt_message["timestamps"]["gateway_published"] = time.time()
         mqtt_client.publish(
-            MQTT_TRIGGER_TOPIC,
+            entry_topic,
             json.dumps(mqtt_message),
             qos=1
         )
@@ -182,5 +211,6 @@ if __name__ == '__main__':
     start_mqtt()
     # Give MQTT client time to connect
     time.sleep(2)
-    print("[Gateway] Starting HTTP server on port 8080")
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    port = int(os.getenv("PORT", "8080"))
+    print(f"[Gateway] Starting HTTP server on port {port}")
+    app.run(host=os.getenv("HOST", "0.0.0.0"), port=port, debug=False, threaded=True)

@@ -1,0 +1,3 @@
+# Pre-processing at the edge, transcription and search in the cloud.
+gateway: edge
+stages: {ffmpeg0: edge, librosa: edge, ffmpeg1: edge, ffmpeg2: edge, deepspeech: cloud, grep: cloud}
