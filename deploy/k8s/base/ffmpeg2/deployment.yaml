@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ffmpeg2-deployment
+  labels:
+    app: ffmpeg2-function
+spec:
+  # replicas: 1; by default k8s creates 1 replica if not specified. Not defining replicas' number is useful for k8s' built-in HPA.
+  selector:
+    matchLabels:
+      app: ffmpeg2-function
+  template:
+    metadata:
+      labels:
+        app: ffmpeg2-function
+    spec:
+      containers:
+      - name: ffmpeg2
+        image: ffmpeg2:latest
+        imagePullPolicy: Never
+        command: ["python3", "/opt/videosearcher/function.py"]
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "64Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: ramdisk
+          mountPath: /mnt/ramdisk
+      volumes:
+      - name: ramdisk
+        hostPath:
+          path: /mnt/ramdisk
+          type: DirectoryOrCreate

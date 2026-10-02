@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grep-deployment
+  labels:
+    app: grep-function
+spec:
+  selector:
+    matchLabels:
+      app: grep-function
+  template:
+    metadata:
+      labels:
+        app: grep-function
+    spec:
+      containers:
+      - name: grep
+        image: grep:latest
+        imagePullPolicy: Never
+        command: ["python3", "/opt/videosearcher/function.py"]
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "64Mi"
+          limits:
+            cpu: "1000m"
+            memory: "128Mi"
+        volumeMounts:
+        - name: ramdisk
+          mountPath: /mnt/ramdisk
+      volumes:
+      - name: ramdisk
+        hostPath:
+          path: /mnt/ramdisk
+          type: DirectoryOrCreate
