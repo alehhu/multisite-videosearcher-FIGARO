@@ -8,3 +8,5 @@ seed/
 logs/
 results/
 tests/integration/.run/
+# local settings
+scripts/tunnel.env

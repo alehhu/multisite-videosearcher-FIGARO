@@ -11,12 +11,43 @@ client --HTTP :30080--> EDGE                        <==MQTT bridge :31883==>  CL
 - k3s (ships metrics-server, needed for CPU metrics and HPA).
 - chrony running and synchronised: per-stage times mix the two clocks.
   Check with `chronyc tracking` (offset should be well under 1 ms).
-- Reachability:
+- Reachability (provided by the SSH tunnel of step 0 if there is no direct route):
   - client → edge `30080/tcp` (gateway);
   - one broker → the other broker `31883/tcp` (MQTT bridge, either direction);
   - client → cloud `31883/tcp` (placement coordinator).
 - Measure the link before anything else: `ping` and `iperf3` between the two servers.
 - Decide the edge CPU budget (the edge should not be larger than the cloud).
+
+## 0. Link between the sites (SSH tunnel)
+
+Needed when the two servers cannot reach each other directly but the edge can reach the
+cloud VM over SSH (possibly through jump hosts). On the edge server, with k3s already
+installed (the tunnel binds to the k3s bridge address):
+
+```bash
+cp scripts/tunnel.env.example scripts/tunnel.env    # fill in the hosts, once
+tmux new -s tunnel
+scripts/tunnel.sh        # edge 10.42.0.1:41883 -> cloud broker, VM localhost:38080 -> edge gateway
+```
+
+ssh asks for the credentials of each hop. When it stops printing, the tunnel is up: detach
+with `Ctrl-b d`. Check it from another shell on the edge server:
+
+```bash
+nc -zv 10.42.0.1 41883      # cloud broker reachable through the tunnel
+```
+
+Then use `--bridge-to 10.42.0.1:41883` when deploying the edge, and
+`http://localhost:38080` as the gateway address for clients running on the cloud VM.
+The tunnel does not reconnect by itself: re-run it after a network drop.
+
+Measure the link before running experiments, at a realistic message rate:
+
+```bash
+ping -c 50 <first-jump-host>                                              # on the edge server
+scripts/link_probe.py --broker localhost:31883 --from edge --to cloud --interval 0.5
+scripts/link_probe.py --broker localhost:31883 --from edge --to edge  --interval 0.5   # local baseline
+```
 
 ## 1. Build the images on each server
 

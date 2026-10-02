@@ -28,7 +28,7 @@ controller/        per-site controller
 monitoring/        timing collector
 deploy/            Kubernetes manifests (base + edge/cloud overlays), broker bridge configs
 placements/        example placement tables
-scripts/           build, deploy, placement changes, seeds
+scripts/           build, deploy, placement changes, seeds, tunnel, link probe
 load/locust/       workload generator
 tests/             unit tests and a two-broker integration test
 data/video.mp4     benchmark input (30 s clip)

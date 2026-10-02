@@ -37,6 +37,9 @@ PLACEMENT_PENDING_TOPIC = "control/placement/pending"
 STATUS_TOPIC_PREFIX = "control/status"
 # observations/<site>: periodic agent-ready metrics published by each local controller.
 OBSERVATIONS_TOPIC_PREFIX = "observations"
+# probe/<site>/ping: latency probes answered by the local controller of <site>, which
+# replies on the topic given in the probe (scripts/link_probe.py).
+PROBE_TOPIC_PREFIX = "probe"
 
 
 def stage_topic(site, stage):
@@ -54,6 +57,14 @@ def dlq_topic(site):
 
 def status_topic(site):
     return f"{STATUS_TOPIC_PREFIX}/{site}"
+
+
+def probe_ping_topic(site):
+    return f"{PROBE_TOPIC_PREFIX}/{site}/ping"
+
+
+def probe_pong_topic(site):
+    return f"{PROBE_TOPIC_PREFIX}/{site}/pong"
 
 
 def observations_topic(site):

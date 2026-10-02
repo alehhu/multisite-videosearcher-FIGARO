@@ -11,7 +11,8 @@ split -> all-cloud -> all-edge). The test then checks that:
   - each job went to the site given by the placement version its sender was using;
   - the seed was used exactly when consecutive stages ran on different sites;
   - no job directory is left on either site;
-  - every transition completed (drained, nothing lost in flight).
+  - every transition completed (drained, nothing lost in flight);
+  - latency probes (scripts/link_probe.py) cross the bridge and come back.
 
     python tests/integration/run_integration.py [--bridge-from edge|cloud] [--jobs-per-s 2]
 """
@@ -43,6 +44,7 @@ RUN_DIR = os.path.join(ROOT, "tests", "integration", ".run")
 PORTS = {"edge": 18831, "cloud": 18832}
 GATEWAY_PORT = 18080
 NETWORK = "multisite-test"
+MOSQUITTO_IMAGE = os.getenv("MOSQUITTO_IMAGE", "eclipse-mosquitto:2.0")
 
 CONTROLLER_CONFIG = {
     "sample_interval_s": 0.5,
@@ -86,7 +88,7 @@ def start_brokers(bridge_from):
         sh("docker", "run", "-d", "--name", f"ms-{site}", "--network", NETWORK,
            "-p", f"{PORTS[site]}:1883",
            "-v", f"{os.path.join(RUN_DIR, f'broker-{site}')}:/mosquitto/config",
-           "eclipse-mosquitto:2.0")
+           MOSQUITTO_IMAGE)
     time.sleep(2)
 
 
@@ -279,6 +281,15 @@ def main():
         time.sleep(1)
 
         errors = check(results, sent, tables, ramdisks)
+        for dst in ("cloud", "edge"):
+            probe = subprocess.run(
+                [sys.executable, os.path.join(ROOT, "scripts", "link_probe.py"),
+                 "--broker", f"localhost:{PORTS['edge']}", "--from", "edge", "--to", dst,
+                 "-n", "50", "--interval", "0.02"],
+                capture_output=True, text=True)
+            print(probe.stdout.strip())
+            if probe.returncode != 0:
+                errors.append(f"link probe edge->{dst} lost replies")
     finally:
         stop_controllers.set()
         for t in threads:

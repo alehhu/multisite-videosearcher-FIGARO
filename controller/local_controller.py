@@ -96,6 +96,7 @@ class LocalController:
         # Plain (non-shared) subscription: the controller observes every job message on
         # its broker without taking it away from the workers.
         client.subscribe("pipeline/#", qos=1)
+        client.subscribe(multisite.probe_ping_topic(self.site), qos=1)
         log(f"[controller@{self.site}] connected")
         self._publish_status()
 
@@ -107,10 +108,19 @@ class LocalController:
             elif msg.topic == multisite.PLACEMENT_PENDING_TOPIC:
                 if msg.payload:
                     self._on_pending(Placement.from_json(msg.payload))
+            elif msg.topic == multisite.probe_ping_topic(self.site):
+                self._on_probe(msg)
             else:
                 self._on_job_message(msg)
         except Exception as exc:  # never let a bad message kill the network thread
             log(f"[controller@{self.site}] error handling {msg.topic}: {exc!r}")
+
+    def _on_probe(self, msg):
+        """Echo a latency probe back to the topic it asks for (scripts/link_probe.py)."""
+        probe = json.loads(msg.payload)
+        probe["echoed_by"] = self.site
+        probe["echoed_at"] = time.time()
+        self.client.publish(probe["reply_to"], json.dumps(probe), qos=1)
 
     def _publish_status(self):
         with self.lock:
