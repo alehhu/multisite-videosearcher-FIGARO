@@ -91,12 +91,17 @@ def parse_topic(topic):
 
 
 class Placement:
-    """Which site runs each stage, plus where the gateway lives (it receives done/dlq)."""
+    """Which site runs each stage, plus where the gateway lives (it receives done/dlq).
 
-    def __init__(self, version, gateway, stages):
+    `replicas` is optional: for the stages that this placement moves to another site, how
+    many instances they had before the move, so the new site starts with the same number.
+    """
+
+    def __init__(self, version, gateway, stages, replicas=None):
         self.version = int(version)
         self.gateway = gateway
         self.stages = dict(stages)
+        self.replicas = {stage: int(n) for stage, n in (replicas or {}).items()}
         self.validate()
 
     def validate(self):
@@ -110,6 +115,9 @@ class Placement:
                 raise ValueError(f"unknown stage {stage!r}")
             if site not in SITES:
                 raise ValueError(f"stage {stage} placed on unknown site {site!r}")
+        for stage, n in self.replicas.items():
+            if stage not in STAGES or n < 1:
+                raise ValueError(f"invalid replicas for {stage!r}: {n}")
 
     def site_of(self, stage):
         return self.stages[stage]
@@ -131,14 +139,17 @@ class Placement:
         return site, stage_topic(site, STAGES[0])
 
     def to_dict(self):
-        return {"version": self.version, "gateway": self.gateway, "stages": self.stages}
+        data = {"version": self.version, "gateway": self.gateway, "stages": self.stages}
+        if self.replicas:
+            data["replicas"] = self.replicas
+        return data
 
     def to_json(self):
         return json.dumps(self.to_dict())
 
     @classmethod
     def from_dict(cls, data):
-        return cls(data["version"], data["gateway"], data["stages"])
+        return cls(data["version"], data["gateway"], data["stages"], data.get("replicas"))
 
     @classmethod
     def from_json(cls, payload):

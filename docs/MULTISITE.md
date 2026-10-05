@@ -113,8 +113,10 @@ POST <url>/action   {"observation": {"n_instances", "utilization", "pressure", "
 (all normalised to 0..1) and scales the stage to the `action` in the reply, kept between
 `min` and `max`. This is the interface of the DQN agent server of ServerlessAutoscalingWithRL.
 If the agent does not answer, the replicas stay as they are. A stage that is being moved
-to the other site is not rescaled until the move is complete. The agent must be reachable
-from both sites, since the stage can run on either.
+to the other site is not rescaled until the move is complete; it starts on the new site
+with the number of replicas it had on the old one, and the placement change waits for all
+of them to be ready. The agent must be reachable from both sites, since the stage can run
+on either.
 
 ## 6. Run the load and collect the logs
 

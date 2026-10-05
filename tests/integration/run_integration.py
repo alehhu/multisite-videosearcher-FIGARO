@@ -15,7 +15,8 @@ split -> all-cloud -> all-edge). The test then checks that:
   - every transition completed (drained, nothing lost in flight);
   - latency probes (scripts/link_probe.py) cross the bridge and come back;
   - the stages with a scaling agent (fake_agent.py) receive the expected observation and
-    are scaled to what the agent answers, up and down, only on the site that hosts them.
+    are scaled to what the agent answers, up and down, only on the site that hosts them;
+  - a stage that moves to the other site starts there with the replicas it had before.
 
     python tests/integration/run_integration.py [--bridge-from edge|cloud] [--jobs-per-s 2]
 """
@@ -208,6 +209,28 @@ def check_agents(agents, tables):
             for row in csv.DictReader(f):
                 if row["stage"] in replicas_seen and row["placed_here"] == "1" and row["draining"] == "0":
                     replicas_seen[row["stage"]].add(int(row["desired"]))
+    # A stage that changes site starts with the replicas announced in the placement message.
+    carried = []
+    for site in SITES:
+        with open(os.path.join(RUN_DIR, f"logs-{site}", "transitions.jsonl")) as f:
+            for event in map(json.loads, f):
+                if event["event"] != "start_requested":
+                    continue
+                expected = tables[event["version"]].replicas.get(event["stage"], 1)
+                if event["replicas"] != expected:
+                    errors.append(f"{site}/{event['stage']} v{event['version']}: started with "
+                                  f"{event['replicas']} replicas, the placement said {expected}")
+                if expected > 1:
+                    carried.append(f"{event['stage']}->{site}:{expected}")
+    if not carried:
+        errors.append("no stage moved with more than one replica: nothing was carried over")
+    # Stages without an agent have a fixed number of replicas: they move with that one.
+    for version, table in tables.items():
+        for stage, count in table.replicas.items():
+            fixed = CONTROLLER_CONFIG["stages"][stage].get("replicas", 1)
+            if stage not in AGENT_STAGES and count != fixed:
+                errors.append(f"v{version}: {stage} has no agent but moved with {count} replicas (fixed: {fixed})")
+    print(f"moves that kept their replicas: {carried}")
     for stage, seen in replicas_seen.items():
         if not {1, 2, 3} <= seen or max(seen) > 3:
             errors.append(f"{stage}: expected to be scaled through 1, 2 and 3 replicas, saw {sorted(seen)}")

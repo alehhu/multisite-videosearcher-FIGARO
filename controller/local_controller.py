@@ -68,7 +68,8 @@ class LocalController:
         self.current = None          # Placement in force
         self.pending = None          # Placement announced, not yet in force
         self.acked_version = 0
-        self.waiting_ready = {}      # stage -> time scale-up was requested (pending placement)
+        self.waiting_ready = {}      # stage -> {"since": t, "target": replicas to see ready}
+        self.replica_counts = {}     # stage -> replicas of the stages settled here (in the status)
         self.draining = {}           # stage -> {"since": t, "version": v}
 
         # Jobs that entered a stage on this site and have not come out yet: stage -> {job: t}
@@ -137,6 +138,8 @@ class LocalController:
                 "current_version": self.current.version if self.current else 0,
                 "draining": sorted(self.draining),
                 "starting": sorted(self.waiting_ready),
+                # Read by the placement coordinator: a stage that moves keeps its replicas.
+                "replicas": dict(self.replica_counts),
                 "t": time.time(),
             }
         self.client.publish(multisite.status_topic(self.site), json.dumps(status), qos=1, retain=True)
@@ -210,9 +213,9 @@ class LocalController:
                     # Moving back here before the drain finished: keep it running.
                     del self.draining[stage]
                     self._event(placement.version, stage, "drain_cancelled")
-                self._activate(stage)
-                self.waiting_ready[stage] = time.time()
-                self._event(placement.version, stage, "start_requested")
+                target = self._activate(stage, placement.replicas.get(stage))
+                self.waiting_ready[stage] = {"since": time.time(), "target": target}
+                self._event(placement.version, stage, "start_requested", replicas=target)
             log(f"[controller@{self.site}] pending v{placement.version}, starting {incoming}")
         self._check_ready()
 
@@ -244,16 +247,27 @@ class LocalController:
                 f"here={placement.stages_on(self.site)} draining={sorted(self.draining)}")
         self._publish_status()
 
-    def _activate(self, stage):
+    def _activate(self, stage, initial=None):
+        """Make sure the stage runs here. `initial` is the number of replicas it had on the
+        site it is moving from; without it the stage starts with its configured `replicas`.
+        Returns how many replicas must be ready before the stage counts as started."""
         cfg = self.stage_cfg[stage]
-        hpa = cfg.get("hpa")
+        hpa, agent = cfg.get("hpa"), cfg.get("agent")
+        running = self.backend.desired(stage)
         if hpa:
-            if self.backend.desired(stage) < hpa["min"]:
-                self.backend.scale(stage, hpa["min"])
+            target = max(hpa["min"], min(initial or hpa["min"], hpa["max"]))
+            if running < target:
+                self.backend.scale(stage, target)
             self.backend.ensure_hpa(stage, hpa)
-        else:
-            if self.backend.desired(stage) == 0:
-                self.backend.scale(stage, cfg.get("replicas", 1))
+            return target
+        target = initial or cfg.get("replicas", 1)
+        if agent:
+            high = agent.get("max", self.config.get("normalization", {}).get("max_n_instances", 10))
+            target = max(agent.get("min", 1), min(target, high))
+        if running > 0:
+            return 1  # already running here (e.g. a cancelled drain): keep what it has
+        self.backend.scale(stage, target)
+        return target
 
     def _deactivate(self, stage):
         self.backend.delete_hpa(stage)
@@ -265,8 +279,9 @@ class LocalController:
             if self.pending is None:
                 return
             now = time.time()
-            for stage, since in list(self.waiting_ready.items()):
-                if self.backend.ready(stage) >= 1:
+            for stage, wait in list(self.waiting_ready.items()):
+                since = wait["since"]
+                if self.backend.ready(stage) >= wait["target"]:
                     del self.waiting_ready[stage]
                     self._event(self.pending.version, stage, "ready", after_s=round(now - since, 3))
                 elif now - since > self.ready_timeout:
@@ -310,6 +325,11 @@ class LocalController:
         snapshot = self.backend.snapshot()  # stage -> desired/ready/alive/terminating/hpa
         cpu = self.backend.cpu_per_stage()  # stage -> mean CPU usage / limit of its pods
         with self.lock:
+            counts = {s: snapshot[s]["desired"] for s in STAGES
+                      if self.current is not None and self.current.site_of(s) == self.site
+                      and s not in self.draining and snapshot[s]["desired"] > 0}
+            counts_changed = counts != self.replica_counts
+            self.replica_counts = counts
             for stage in STAGES:
                 snap = snapshot[stage]
                 ready, alive = snap["ready"], snap["alive"]
@@ -324,6 +344,8 @@ class LocalController:
                     if stage in cpu:
                         w.cpu_samples.append(cpu[stage])
         self.pods_file.flush()
+        if counts_changed:
+            self._publish_status()
 
     def _observe(self):
         """Close the window and compute the state the agents expect.

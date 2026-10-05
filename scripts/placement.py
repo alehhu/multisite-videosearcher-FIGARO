@@ -78,10 +78,19 @@ class Coordinator:
                           timeout, "sites to finish draining")
         with self.changed:
             last = max([0] + [p.version for p in (self.current, self.pending) if p])
-        placement = Placement(last + 1, gateway, stages)
+            # Stages that change site keep the number of instances they have now.
+            replicas = {}
+            if self.current is not None:
+                for stage, site in stages.items():
+                    old_site = self.current.site_of(stage)
+                    n = self.status.get(old_site, {}).get("replicas", {}).get(stage)
+                    if old_site != site and n:
+                        replicas[stage] = n
+        placement = Placement(last + 1, gateway, stages, replicas)
         v = placement.version
 
-        print(f"v{v}: announcing {placement.stages} (gateway: {gateway})")
+        print(f"v{v}: announcing {placement.stages} (gateway: {gateway})"
+              + (f", moving with replicas {replicas}" if replicas else ""))
         self.client.publish(multisite.PLACEMENT_PENDING_TOPIC, placement.to_json(), qos=1, retain=True).wait_for_publish()
         t0 = time.time()
         self.wait_for(lambda: all(self.status.get(s, {}).get("acked_version", 0) >= v for s in SITES),
