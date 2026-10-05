@@ -13,8 +13,10 @@ client ──► EDGE (Modena) ◄──MQTT bridge──► CLOUD (Milano)
   each site starts the stages assigned to it and drains the ones that moved away.
 - Files are not transferred between sites: a job arriving from the other site reads its
   input from a local seed copy, so the experiment measures latency, not bandwidth.
-- Each site logs per-job timings, pod counts, placement changes and the state used by
-  the scaling agents.
+- A stage can be scaled by an external agent: at every observation window the controller
+  sends it the stage's state and applies the number of instances it returns.
+- Each site logs per-job timings, pod counts, placement changes, and the observations
+  and decisions of the scaling agents.
 
 Tested locally with `tests/integration`; not yet run on the two servers.
 

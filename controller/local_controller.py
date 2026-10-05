@@ -6,13 +6,15 @@ Responsibilities:
          they are ready, ack it on control/status/<site>;
        - on the *current* placement, drain the stages that left this site (wait until every
          job that entered them here has come out) and only then scale them to zero.
-  2. Autoscaling surface: stages with an `hpa` block get an HPA while they run here;
-     the others get a fixed number of replicas.
+  2. Scaling: a stage with an `agent` block is scaled by an external agent, asked at
+     every observation window (POST <url>/action, same interface as the DQN agent server
+     of ServerlessAutoscalingWithRL); one with an `hpa` block gets an HPA while it runs
+     here; the others keep a fixed number of replicas.
   3. Measurements, written under LOG_DIR:
        pods.csv          desired / ready / alive / terminating replicas per stage
        transitions.jsonl every step of every placement change
        observations.jsonl agent-ready state (DQN per stage, master per site), also
-                          published on observations/<site>. Recorded only: no agent is called yet.
+                          published on observations/<site>, with the agents' decisions.
 """
 
 import csv
@@ -21,6 +23,7 @@ import os
 import sys
 import threading
 import time
+import urllib.request
 
 import yaml
 
@@ -56,6 +59,10 @@ class LocalController:
         self.drain_quiet = config.get("drain_quiet_s", 10)
         self.drain_timeout = config.get("drain_timeout_s", 1800)
         self.ready_timeout = config.get("ready_timeout_s", 600)
+        self.agent_timeout = config.get("agent_timeout_s", 3)
+        for stage, cfg in self.stage_cfg.items():
+            if cfg.get("agent") and cfg.get("hpa"):
+                raise ValueError(f"stage {stage}: configure either `agent` or `hpa`, not both")
 
         self.lock = threading.RLock()
         self.current = None          # Placement in force
@@ -349,6 +356,13 @@ class LocalController:
             self.window = {s: StageWindow() for s in STAGES}
             self.window_start = now
             self.lambda_arrivals = 0
+            # Only stages that are settled here: not the ones being drained or started.
+            scalable = [s for s in stages if self.stage_cfg[s].get("agent")
+                        and self.current is not None and self.current.site_of(s) == self.site
+                        and s not in self.draining]
+        # Outside the lock: an agent that is slow to answer must not block job tracking.
+        for stage in scalable:
+            stages[stage]["agent"] = self._ask_agent(stage, stages[stage]["observation"])
         with open(self.observations_path, "a") as f:
             f.write(json.dumps(record) + "\n")
         self.client.publish(multisite.observations_topic(self.site), json.dumps(record), qos=1)
@@ -387,6 +401,38 @@ class LocalController:
             "workload": min(1.0, raw["workload"] / max_workload),
         }
         return {"raw": raw, "observation": observation}
+
+    def _ask_agent(self, stage, observation):
+        """Send the observation to the stage's agent and apply the replicas it returns.
+
+        On any error the current number of replicas is kept.
+        """
+        cfg = self.stage_cfg[stage]["agent"]
+        result = {"action": None, "applied": None, "previous": self.backend.desired(stage), "error": None}
+        try:
+            request = urllib.request.Request(
+                cfg["url"].rstrip("/") + "/action",
+                data=json.dumps({"observation": observation}).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=self.agent_timeout) as response:
+                result["action"] = int(json.loads(response.read())["action"])
+        except Exception as exc:
+            result["error"] = repr(exc)
+            log(f"[controller@{self.site}] {stage}: agent error, keeping {result['previous']} replicas: {exc!r}")
+            return result
+        low = cfg.get("min", 1)
+        high = cfg.get("max", self.config.get("normalization", {}).get("max_n_instances", 10))
+        replicas = max(low, min(result["action"], high))
+        with self.lock:
+            # The placement may have changed while waiting for the answer.
+            still_here = (self.current is not None and self.current.site_of(stage) == self.site
+                          and stage not in self.draining)
+            if still_here:
+                result["applied"] = replicas
+                if replicas != result["previous"]:
+                    self.backend.scale(stage, replicas)
+                    log(f"[controller@{self.site}] {stage}: agent {result['previous']} -> {replicas} replicas")
+        return result
 
     # Main loop
 

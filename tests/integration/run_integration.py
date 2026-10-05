@@ -13,12 +13,15 @@ split -> all-cloud -> all-edge). The test then checks that:
   - job directories are kept by the workers, and scripts/clean-ramdisk.sh removes them
     without touching the seeds;
   - every transition completed (drained, nothing lost in flight);
-  - latency probes (scripts/link_probe.py) cross the bridge and come back.
+  - latency probes (scripts/link_probe.py) cross the bridge and come back;
+  - the stages with a scaling agent (fake_agent.py) receive the expected observation and
+    are scaled to what the agent answers, up and down, only on the site that hosts them.
 
     python tests/integration/run_integration.py [--bridge-from edge|cloud] [--jobs-per-s 2]
 """
 
 import argparse
+import csv
 import json
 import os
 import shutil
@@ -39,11 +42,14 @@ from multisite import GROUPS, SITES, STAGES, Placement  # noqa: E402
 from local_controller import LocalController  # noqa: E402
 from placement import Coordinator, load_placement_file  # noqa: E402
 from process_backend import ProcessBackend  # noqa: E402
+from fake_agent import FakeAgents  # noqa: E402
 
 # Inside $HOME so that Docker (colima) can bind-mount it.
 RUN_DIR = os.path.join(ROOT, "tests", "integration", ".run")
 PORTS = {"edge": 18831, "cloud": 18832}
 GATEWAY_PORT = 18080
+AGENT_PORT = 18090
+AGENT_STAGES = ["ffmpeg2", "deepspeech"]   # scaled by the (fake) agents, between 1 and 3
 NETWORK = "multisite-test"
 MOSQUITTO_IMAGE = os.getenv("MOSQUITTO_IMAGE", "eclipse-mosquitto:2.0")
 
@@ -57,8 +63,8 @@ CONTROLLER_CONFIG = {
         "ffmpeg0": {"replicas": 1, "res_time_threshold": 1},
         "librosa": {"replicas": 1, "res_time_threshold": 1},
         "ffmpeg1": {"replicas": 1, "res_time_threshold": 1},
-        "ffmpeg2": {"res_time_threshold": 1, "hpa": {"min": 1, "max": 3, "cpu_target": 60}},
-        "deepspeech": {"res_time_threshold": 1, "hpa": {"min": 1, "max": 3, "cpu_target": 60}},
+        "ffmpeg2": {"replicas": 1, "res_time_threshold": 1},      # `agent` added in main()
+        "deepspeech": {"replicas": 1, "res_time_threshold": 1},
         "grep": {"replicas": 1, "res_time_threshold": 1},
     },
 }
@@ -167,6 +173,49 @@ def wait_http(url, timeout):
             time.sleep(0.5)
 
 
+def check_agents(agents, tables):
+    """The controller sent well-formed observations and applied the agents' answers."""
+    errors = []
+    keys = {"n_instances", "utilization", "pressure", "queue_length_dominant", "workload"}
+    for stage in AGENT_STAGES:
+        if not any(s == stage for s, _, _ in agents.requests):
+            errors.append(f"the {stage} agent was never asked")
+    for stage, body, _ in agents.requests:
+        obs = body.get("observation", {})
+        if set(body) != {"observation"} or set(obs) != keys:
+            errors.append(f"{stage}: unexpected request body {body}")
+        elif not all(isinstance(v, (int, float)) and 0 <= v <= 1 for v in obs.values()):
+            errors.append(f"{stage}: observation not normalised: {obs}")
+
+    decisions, replicas_seen = 0, {s: set() for s in AGENT_STAGES}
+    for site in SITES:
+        with open(os.path.join(RUN_DIR, f"logs-{site}", "observations.jsonl")) as f:
+            for line in f:
+                record = json.loads(line)
+                for stage, entry in record["stages"].items():
+                    agent = entry.get("agent")
+                    if agent is None:
+                        continue
+                    decisions += 1
+                    where = tables[record["placement_version"]].site_of(stage)
+                    if stage not in AGENT_STAGES or where != site:
+                        errors.append(f"{site} asked an agent for {stage}, placed on {where}")
+                    if agent["error"]:
+                        errors.append(f"{site}/{stage}: agent error {agent['error']}")
+                    elif agent["applied"] is not None and agent["applied"] != max(1, min(agent["action"], 3)):
+                        errors.append(f"{site}/{stage}: answered {agent['action']}, applied {agent['applied']}")
+        with open(os.path.join(RUN_DIR, f"logs-{site}", "pods.csv")) as f:
+            for row in csv.DictReader(f):
+                if row["stage"] in replicas_seen and row["placed_here"] == "1" and row["draining"] == "0":
+                    replicas_seen[row["stage"]].add(int(row["desired"]))
+    for stage, seen in replicas_seen.items():
+        if not {1, 2, 3} <= seen or max(seen) > 3:
+            errors.append(f"{stage}: expected to be scaled through 1, 2 and 3 replicas, saw {sorted(seen)}")
+    print(f"agents: {len(agents.requests)} requests, {decisions} decisions logged, "
+          f"replicas seen {{{', '.join(f'{s}: {sorted(v)}' for s, v in replicas_seen.items())}}}")
+    return errors
+
+
 def check(results, sent, tables, ramdisks):
     errors = []
     missing = sorted(set(sent) - set(results.done))
@@ -247,6 +296,9 @@ def main():
     start_brokers(args.bridge_from)
     procs, backends, controllers, threads = [], {}, {}, []
     stop_controllers = threading.Event()
+    agents = FakeAgents(AGENT_PORT)
+    for stage in AGENT_STAGES:
+        CONTROLLER_CONFIG["stages"][stage]["agent"] = {"url": agents.url(stage), "min": 1, "max": 3}
     try:
         for site in SITES:
             backends[site] = ProcessBackend(site, PORTS[site], ramdisks[site], RUN_DIR,
@@ -297,6 +349,7 @@ def main():
         time.sleep(1)
 
         errors = check(results, sent, tables, ramdisks)
+        errors += check_agents(agents, tables)
         for dst in ("cloud", "edge"):
             probe = subprocess.run(
                 [sys.executable, os.path.join(ROOT, "scripts", "link_probe.py"),
@@ -315,6 +368,7 @@ def main():
         for p in procs:
             p.terminate()
             p.wait(timeout=10)
+        agents.stop()
         stop_brokers()
 
     if errors:

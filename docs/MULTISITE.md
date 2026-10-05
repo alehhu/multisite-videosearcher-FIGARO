@@ -94,7 +94,29 @@ scripts/placement.py show --broker <cloud-host>:31883
 `publish` returns once the new table is in force; the old site keeps draining in the
 background (see `control/status/<site>` via `show`). Any YAML with the same shape works.
 
-## 5. Run the load and collect the logs
+## 5. Scaling agents (optional)
+
+By default every stage keeps a fixed number of replicas. To let an agent scale a stage,
+add an `agent` block to it in `deploy/k8s/base/controller-config.yaml` and redeploy:
+
+```yaml
+  deepspeech: {deployment: deepspeech-deployment, app_label: deepspeech-function, replicas: 1,
+               res_time_threshold: 103.52, agent: {url: "http://<agent-host>:<port>", min: 1, max: 10}}
+```
+
+Every `observation_interval_s` the controller of the site that hosts the stage sends
+
+```
+POST <url>/action   {"observation": {"n_instances", "utilization", "pressure", "queue_length_dominant", "workload"}}
+```
+
+(all normalised to 0..1) and scales the stage to the `action` in the reply, kept between
+`min` and `max`. This is the interface of the DQN agent server of ServerlessAutoscalingWithRL.
+If the agent does not answer, the replicas stay as they are. A stage that is being moved
+to the other site is not rescaled until the move is complete. The agent must be reachable
+from both sites, since the stage can run on either.
+
+## 6. Run the load and collect the logs
 
 ```bash
 curl -X POST http://<edge-host>:30080/workflow/invoke/videosearcher_workflow \
@@ -110,12 +132,12 @@ Logs on each node, under `/var/log/multisite/`:
 | `timing.jsonl` | edge | one record per finished job: per-stage start/end, site, pod, placement version, `wait`, errors |
 | `pods.csv` | both | every 5 s, per stage: desired, ready, alive, terminating, hpa, placed_here, draining |
 | `transitions.jsonl` | both | each step of each placement change |
-| `observations.jsonl` | both | every 120 s: agent-ready state per stage (DQN) and per site (master) |
+| `observations.jsonl` | both | every 120 s: state per stage and per site, with each agent's answer and the replicas applied |
 
 For resources and cost use `alive` (it includes pods that are shutting down but still working),
 not `desired` or `ready`.
 
-## 6. Clean up between experiments
+## 7. Clean up between experiments
 
 The workers keep every job directory under `/mnt/ramdisk` (about 1 MB each time a job moves
 to the other site). On each node:
