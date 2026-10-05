@@ -115,6 +115,16 @@ Logs on each node, under `/var/log/multisite/`:
 For resources and cost use `alive` (it includes pods that are shutting down but still working),
 not `desired` or `ready`.
 
+## 6. Clean up between experiments
+
+The workers keep every job directory under `/mnt/ramdisk` (about 1 MB each time a job moves
+to the other site). On each node:
+
+```bash
+scripts/clean-ramdisk.sh            # dry run: how many directories, how many MB
+scripts/clean-ramdisk.sh --delete   # removes job-* only; seed/ and video.mp4 stay
+```
+
 ## Local test without servers
 
 ```bash

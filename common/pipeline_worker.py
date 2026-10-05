@@ -6,6 +6,7 @@ replica. After the handler runs, the worker looks up the current placement table
 (retained on `control/placement/current`) and publishes the job to the site that hosts
 the next stage. Messages only carry the job id and timestamps: files stay on the site's
 ramdisk, and a job arriving from the other site gets its input from the local seed copy.
+Job directories are never removed by the worker (scripts/clean-ramdisk.sh does it).
 """
 
 import json
@@ -198,7 +199,7 @@ class PipelineWorker:
 
         error = None
         try:
-            if self.stage != STAGES[0] and not os.path.isdir(job_dir):
+            if self._needs_seed(params, job_dir):
                 # The previous stage ran on the other site: its output is not here.
                 ts[f"{self.group}_seed_start"] = time.time()
                 self._copy_seed(job_dir)
@@ -220,24 +221,40 @@ class PipelineWorker:
             placement = self.placement
         if error is not None:
             params["error"] = error
-            dest_site, topic = placement.gateway, multisite.dlq_topic(placement.gateway)
+            topic = multisite.dlq_topic(placement.gateway)
         else:
-            dest_site, topic = placement.destination(self.stage)
+            _, topic = placement.destination(self.stage)
         params.setdefault("placement_versions", {})[self.stage] = placement.version
 
         ts[f"{self.group}_published"] = time.time()
         info = self.client.publish(topic, json.dumps(params), qos=1)
         info.wait_for_publish(timeout=60)
 
-        # The job leaves this site (or is dead): its working directory is no longer needed.
-        if (error is not None or dest_site != self.site) and os.path.isdir(job_dir):
-            shutil.rmtree(job_dir, ignore_errors=True)
+        # Job directories are left in place (also when the job moves to the other site or
+        # fails): scripts/clean-ramdisk.sh removes them after the experiment.
+
+    def _needs_seed(self, params, job_dir):
+        """True when this stage's input is not on this site.
+
+        Decided from where the previous stage ran, not from whether the job directory
+        exists: directories are kept, so a job coming back to a site it already visited
+        (edge -> cloud -> edge) finds its old directory, without the input it needs now.
+        """
+        previous = multisite.previous_stage(self.stage)
+        if previous is None:
+            return False
+        previous_site = params.get("sites", {}).get(previous)
+        if previous_site is None:
+            # Message not produced by the pipeline (e.g. injected by hand).
+            return not os.path.isdir(job_dir)
+        return previous_site != self.site
 
     def _copy_seed(self, job_dir):
         src = os.path.join(self.seed_dir, self.stage)
         if not os.path.isdir(src):
             raise FileNotFoundError(f"no seed for {self.stage} at {src}")
-        shutil.copytree(src, job_dir)
+        # The directory may exist from an earlier visit of this job to this site.
+        shutil.copytree(src, job_dir, dirs_exist_ok=True)
 
     def _capture_seed(self, job_dir):
         """Save this stage's input as the seed used when a job arrives from the other site."""
