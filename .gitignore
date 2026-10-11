@@ -10,3 +10,5 @@ results/
 tests/integration/.run/
 # local settings
 scripts/tunnel.env
+# per-site settings
+site.env
