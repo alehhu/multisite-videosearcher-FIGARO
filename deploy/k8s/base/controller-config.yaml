@@ -9,17 +9,48 @@ agent_timeout_s: 3            # an agent that does not answer in time leaves the
 # Thresholds come from ServerlessAutoscalingWithRL/figaro/controller/config.py (single node,
 # full video): they only scale `pressure` and must be recalibrated on the two-site setup.
 stages:
-  ffmpeg0:    {deployment: ffmpeg0-deployment,    app_label: ffmpeg0-function,    replicas: 1, res_time_threshold: 2.03}
-  librosa:    {deployment: librosa-deployment,    app_label: librosa-function,    replicas: 1, res_time_threshold: 6.00}
-  ffmpeg1:    {deployment: ffmpeg1-deployment,    app_label: ffmpeg1-function,    replicas: 1, res_time_threshold: 2.08}
-  ffmpeg2:    {deployment: ffmpeg2-deployment,    app_label: ffmpeg2-function,    replicas: 1, res_time_threshold: 93.02}
-  deepspeech: {deployment: deepspeech-deployment, app_label: deepspeech-function, replicas: 1, res_time_threshold: 103.52}
-  grep:       {deployment: grep-deployment,       app_label: grep-function,       replicas: 1, res_time_threshold: 0.17}
+  ffmpeg0:
+    deployment: ffmpeg0-deployment
+    app_label: ffmpeg0-function
+    replicas: 1
+    res_time_threshold: 2.03
+    agent: {url: "http://agent-ffmpeg0:5000", min: 1, max: 10}
+  librosa:
+    deployment: librosa-deployment
+    app_label: librosa-function
+    replicas: 1
+    res_time_threshold: 6.00
+    agent: {url: "http://agent-librosa:5000", min: 1, max: 10}
+  ffmpeg1:
+    deployment: ffmpeg1-deployment
+    app_label: ffmpeg1-function
+    replicas: 1
+    res_time_threshold: 2.08
+    agent: {url: "http://agent-ffmpeg1:5000", min: 1, max: 10}
+  ffmpeg2:
+    deployment: ffmpeg2-deployment
+    app_label: ffmpeg2-function
+    replicas: 1
+    res_time_threshold: 93.02
+    agent: {url: "http://agent-ffmpeg2:5000", min: 1, max: 10}
+  deepspeech:
+    deployment: deepspeech-deployment
+    app_label: deepspeech-function
+    replicas: 1
+    res_time_threshold: 103.52
+    agent: {url: "http://agent-deepspeech:5000", min: 1, max: 10}
+  grep:
+    deployment: grep-deployment
+    app_label: grep-function
+    replicas: 1
+    res_time_threshold: 0.17
+    agent: {url: "http://agent-grep:5000", min: 1, max: 10}
 
-# Scaling. Without anything else a stage keeps `replicas` instances. Add to a stage either
-#   agent: {url: "http://<agent-host>:<port>", min: 1, max: 10}
-# to let a scaling agent decide (every observation window the controller POSTs the
-# normalised observation to <url>/action and applies the returned number of instances), or
+# Scaling. With AGENTS=0 in the site settings (the default overlays) the `agent` blocks are
+# ignored and every stage keeps `replicas` instances. With AGENTS=1 (overlays <site>-agents)
+# the controller POSTs, every observation window, the normalised observation of each stage
+# to <url>/action and applies the returned number of instances, between `min` and `max`.
+# Instead of `agent`, a stage can have
 #   hpa: {min: 1, max: 6, cpu_target: 60}
 # to use a Kubernetes HPA on CPU.
 

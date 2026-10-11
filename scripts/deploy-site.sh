@@ -1,8 +1,11 @@
 #!/bin/bash
 # Deploy one site (its own k3s cluster) of the multi-site pipeline.
 #
-#   scripts/deploy-site.sh --site edge  [--bridge-to <cloud-host>:31883] [--context <kubectl-context>]
-#   scripts/deploy-site.sh --site cloud [--bridge-to <edge-host>:31883]  [--context <kubectl-context>]
+#   scripts/deploy-site.sh --site edge  [--bridge-to <cloud-host>:31883] [--agents] [--context <kubectl-context>]
+#   scripts/deploy-site.sh --site cloud [--bridge-to <edge-host>:31883]  [--agents] [--context <kubectl-context>]
+#
+# --agents also deploys the six scaling agents and makes the controller use them (overlay
+# <site>-agents); without it every stage keeps a fixed number of replicas.
 #
 # --bridge-to goes on exactly ONE of the two sites: the one that can reach the other
 # site's broker (NodePort 31883). It opens the MQTT bridge that carries jobs, placement
@@ -12,19 +15,21 @@
 # and the seeds from data/seed (or from --seeds <dir>), see scripts/capture-seeds.sh.
 set -euo pipefail
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
 
 SITE=""
 BRIDGE_TO=""
 CONTEXT_ARGS=()
 PREPARE_NODE="false"
 SEED_SRC=""
+OVERLAY_SUFFIX=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --site) SITE="${2:-}"; shift 2 ;;
         --bridge-to) BRIDGE_TO="${2:-}"; shift 2 ;;
         --context) CONTEXT_ARGS=(--context "${2:-}"); shift 2 ;;
         --prepare-node) PREPARE_NODE="true"; shift ;;
+        --agents) OVERLAY_SUFFIX="-agents"; shift ;;
         --seeds) SEED_SRC="${2:-}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Error: unknown argument '$1'" >&2; usage; exit 1 ;;
@@ -61,8 +66,12 @@ if [[ "$PREPARE_NODE" == "true" ]]; then
     ls -la /mnt/ramdisk /mnt/ramdisk/seed 2>/dev/null || true
 fi
 
-echo "=== Applying overlay $SITE ==="
-"${KUBECTL[@]}" apply -k "$ROOT/deploy/k8s/overlays/$SITE"
+echo "=== Applying overlay $SITE$OVERLAY_SUFFIX ==="
+"${KUBECTL[@]}" apply -k "$ROOT/deploy/k8s/overlays/$SITE$OVERLAY_SUFFIX"
+if [[ -z "$OVERLAY_SUFFIX" ]]; then
+    # Agents left by an earlier deploy with --agents.
+    "${KUBECTL[@]}" -n "$NS" delete deployment,service -l tier=agent --ignore-not-found
+fi
 
 if [[ -n "$BRIDGE_TO" ]]; then
     [[ "$BRIDGE_TO" == *:* ]] || BRIDGE_TO="$BRIDGE_TO:31883"

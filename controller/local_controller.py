@@ -480,12 +480,20 @@ class LocalController:
         self.pods_file.close()
 
 
+def disable_agents(config):
+    """Ignore the `agent` blocks: every stage keeps its fixed replicas (or its HPA)."""
+    for cfg in config["stages"].values():
+        cfg.pop("agent", None)
+
+
 def main():
     from kube_backend import KubeBackend
 
     site = os.environ["SITE"]
     with open(os.getenv("CONTROLLER_CONFIG", "/etc/controller/config.yaml")) as f:
         config = yaml.safe_load(f)
+    if os.getenv("AGENTS", "1") == "0":
+        disable_agents(config)
     backend = KubeBackend(os.getenv("NAMESPACE", "default"), config["stages"])
     controller = LocalController(
         site, config, backend,

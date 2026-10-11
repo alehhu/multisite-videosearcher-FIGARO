@@ -1,0 +1,8 @@
+# The cloud site with the scaling agents.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: multisite
+resources:
+- ../cloud
+components:
+- ../../agents

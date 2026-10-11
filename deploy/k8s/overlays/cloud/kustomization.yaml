@@ -10,3 +10,4 @@ configMapGenerator:
   - SITE=cloud
   - MQTT_BROKER=mosquitto-service
   - MQTT_PORT=1883
+  - AGENTS=0   # fixed replicas; the overlay cloud-agents sets 1

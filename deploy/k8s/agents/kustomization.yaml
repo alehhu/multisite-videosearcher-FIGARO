@@ -1,0 +1,11 @@
+# Optional part of a site: the six scaling agents, and the switch that makes the local
+# controller use them (AGENTS=1). Included by the overlays <site>-agents.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+- agents.yaml
+configMapGenerator:
+- name: site-config
+  behavior: merge
+  literals:
+  - AGENTS=1

@@ -1,0 +1,297 @@
+# Scaling agents: one per stage, the DQN agents of ServerlessAutoscalingWithRL, unchanged.
+# All six use the same image (scripts/build-agent-image.sh) and differ only in the trained
+# checkpoint they load. The controller of this site calls http://agent-<stage>:5000/action.
+# No memory limit yet: the footprint of an agent (Ray + PyTorch) has to be measured first.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-ffmpeg0
+  labels:
+    app: agent-ffmpeg0
+    tier: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-ffmpeg0
+  template:
+    metadata:
+      labels:
+        app: agent-ffmpeg0
+        tier: agent
+    spec:
+      containers:
+      - name: agent
+        image: figaro-production_agent:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CHECKPOINT_PATH
+          value: trained_checkpoint_cl1
+        ports:
+        - containerPort: 5000
+          name: http
+        # The server listens only after the checkpoint is loaded.
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-ffmpeg0
+spec:
+  selector:
+    app: agent-ffmpeg0
+  ports:
+  - port: 5000
+    targetPort: 5000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-librosa
+  labels:
+    app: agent-librosa
+    tier: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-librosa
+  template:
+    metadata:
+      labels:
+        app: agent-librosa
+        tier: agent
+    spec:
+      containers:
+      - name: agent
+        image: figaro-production_agent:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CHECKPOINT_PATH
+          value: trained_checkpoint_cl2
+        ports:
+        - containerPort: 5000
+          name: http
+        # The server listens only after the checkpoint is loaded.
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-librosa
+spec:
+  selector:
+    app: agent-librosa
+  ports:
+  - port: 5000
+    targetPort: 5000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-ffmpeg1
+  labels:
+    app: agent-ffmpeg1
+    tier: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-ffmpeg1
+  template:
+    metadata:
+      labels:
+        app: agent-ffmpeg1
+        tier: agent
+    spec:
+      containers:
+      - name: agent
+        image: figaro-production_agent:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CHECKPOINT_PATH
+          value: trained_checkpoint_cl3
+        ports:
+        - containerPort: 5000
+          name: http
+        # The server listens only after the checkpoint is loaded.
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-ffmpeg1
+spec:
+  selector:
+    app: agent-ffmpeg1
+  ports:
+  - port: 5000
+    targetPort: 5000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-ffmpeg2
+  labels:
+    app: agent-ffmpeg2
+    tier: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-ffmpeg2
+  template:
+    metadata:
+      labels:
+        app: agent-ffmpeg2
+        tier: agent
+    spec:
+      containers:
+      - name: agent
+        image: figaro-production_agent:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CHECKPOINT_PATH
+          value: trained_checkpoint_cl4
+        ports:
+        - containerPort: 5000
+          name: http
+        # The server listens only after the checkpoint is loaded.
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-ffmpeg2
+spec:
+  selector:
+    app: agent-ffmpeg2
+  ports:
+  - port: 5000
+    targetPort: 5000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-deepspeech
+  labels:
+    app: agent-deepspeech
+    tier: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-deepspeech
+  template:
+    metadata:
+      labels:
+        app: agent-deepspeech
+        tier: agent
+    spec:
+      containers:
+      - name: agent
+        image: figaro-production_agent:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CHECKPOINT_PATH
+          value: trained_checkpoint_cl5
+        ports:
+        - containerPort: 5000
+          name: http
+        # The server listens only after the checkpoint is loaded.
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-deepspeech
+spec:
+  selector:
+    app: agent-deepspeech
+  ports:
+  - port: 5000
+    targetPort: 5000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-grep
+  labels:
+    app: agent-grep
+    tier: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-grep
+  template:
+    metadata:
+      labels:
+        app: agent-grep
+        tier: agent
+    spec:
+      containers:
+      - name: agent
+        image: figaro-production_agent:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CHECKPOINT_PATH
+          value: trained_checkpoint_cl6
+        ports:
+        - containerPort: 5000
+          name: http
+        # The server listens only after the checkpoint is loaded.
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-grep
+spec:
+  selector:
+    app: agent-grep
+  ports:
+  - port: 5000
+    targetPort: 5000

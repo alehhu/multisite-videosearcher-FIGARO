@@ -8,15 +8,16 @@
 #   scripts/setup-site.sh --skip-build   # images already built and imported
 #
 # Steps: check the prerequisites, build the images, import them into k3s, create the
-# Python environment for the scripts, prepare /mnt/ramdisk, deploy the site (and the MQTT
-# bridge, if BRIDGE_TO is set). It can be run again at any time.
+# Python environment for the scripts, prepare /mnt/ramdisk, deploy the site (the MQTT
+# bridge if BRIDGE_TO is set, the scaling agents unless AGENTS is false). It can be run
+# again at any time, but not during an experiment: it restarts the pods.
 #
 # Nothing is installed on the server: a missing prerequisite stops the script with the
 # command to run. sudo is used only to import the images into k3s and to create
 # /mnt/ramdisk and /var/log/multisite.
 set -euo pipefail
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
 
 CHECK_ONLY="false"
 SKIP_BUILD="false"
@@ -41,9 +42,15 @@ fi
 source "$ROOT/site.env"
 SITE="${SITE:-}"
 BRIDGE_TO="${BRIDGE_TO:-}"
+AGENTS="${AGENTS:-true}"
 if [[ "$SITE" != "edge" && "$SITE" != "cloud" ]]; then
     echo "Error: SITE in site.env must be edge or cloud" >&2; exit 1
 fi
+if [[ "$AGENTS" != "true" && "$AGENTS" != "false" ]]; then
+    echo "Error: AGENTS in site.env must be true or false" >&2; exit 1
+fi
+STAGES=(ffmpeg0 librosa ffmpeg1 ffmpeg2 deepspeech grep)
+[[ "$AGENTS" == "true" ]] && IMAGES+=(figaro-production_agent)
 
 step() { echo; echo "=== $1 ==="; }
 
@@ -54,7 +61,7 @@ ok()   { echo "  ok       $1"; }
 fail() { echo "  MISSING  $1"; ERRORS+=("$1: $2"); }
 warn() { echo "  warning  $1"; WARNINGS+=("$1: $2"); }
 
-step "Checking the prerequisites (site: $SITE)"
+step "Checking the prerequisites (site: $SITE, agents: $AGENTS)"
 
 if [[ "$(uname -m)" == "x86_64" ]]; then ok "x86-64 machine"
 else fail "x86-64 machine" "this is $(uname -m); the base image of the stages exists only for amd64"; fi
@@ -115,6 +122,10 @@ if [[ "$SKIP_BUILD" == "true" ]]; then
 else
     step "Building the images"
     "$ROOT/scripts/build-all-images.sh"
+    if [[ "$AGENTS" == "true" ]]; then
+        step "Building the image of the scaling agents"
+        "$ROOT/scripts/build-agent-image.sh"
+    fi
 
     step "Importing the images into k3s"
     for image in "${IMAGES[@]}"; do
@@ -131,6 +142,7 @@ echo ".venv ready"
 step "Deploying site $SITE"
 DEPLOY_ARGS=(--site "$SITE" --prepare-node)
 [[ -n "$BRIDGE_TO" ]] && DEPLOY_ARGS+=(--bridge-to "$BRIDGE_TO")
+[[ "$AGENTS" == "true" ]] && DEPLOY_ARGS+=(--agents)
 "$ROOT/scripts/deploy-site.sh" "${DEPLOY_ARGS[@]}"
 
 if [[ "$ALREADY_DEPLOYED" == "true" && "$SKIP_BUILD" != "true" ]]; then
@@ -142,6 +154,38 @@ fi
 if [[ "$SITE" == "edge" ]]; then
     kubectl -n "$NS" rollout status deployment/gateway-deployment --timeout=120s
     kubectl -n "$NS" rollout status deployment/timing-collector --timeout=120s
+fi
+
+if [[ "$AGENTS" == "true" ]]; then
+    step "Waiting for the scaling agents"
+    for stage in "${STAGES[@]}"; do
+        if ! kubectl -n "$NS" rollout status "deployment/agent-$stage" --timeout=600s; then
+            kubectl -n "$NS" get pods -l tier=agent
+            echo "Error: agent-$stage did not start. See: kubectl -n $NS logs deployment/agent-$stage" >&2
+            exit 1
+        fi
+    done
+
+    step "Asking each agent for one action"
+    # From the controller's pod: the same path the controller uses during an experiment.
+    kubectl -n "$NS" exec -i deployment/local-controller -- python3 - "${STAGES[@]}" <<'PYTHON' \
+        || echo "warning: the agents did not all answer; the controller keeps the replicas unchanged when they do not"
+import json, sys, urllib.request
+observation = {"n_instances": 0.1, "utilization": 0.5, "pressure": 0.5,
+               "queue_length_dominant": 0.0, "workload": 0.2}
+failed = False
+for stage in sys.argv[1:]:
+    request = urllib.request.Request(f"http://agent-{stage}:5000/action",
+                                     data=json.dumps({"observation": observation}).encode(),
+                                     headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            print(f"  agent-{stage}: action {json.loads(response.read())['action']}")
+    except Exception as exc:
+        failed = True
+        print(f"  agent-{stage}: FAILED {exc!r}")
+sys.exit(1 if failed else 0)
+PYTHON
 fi
 
 step "Site $SITE is up"

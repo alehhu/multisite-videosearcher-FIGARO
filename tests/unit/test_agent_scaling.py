@@ -9,7 +9,7 @@ for sub in ("common", "controller", os.path.join("tests", "integration")):
     sys.path.insert(0, os.path.join(ROOT, sub))
 
 from fake_agent import FakeAgents  # noqa: E402  (answers 2, 3, 1, ... per stage)
-from local_controller import LocalController  # noqa: E402
+from local_controller import LocalController, disable_agents  # noqa: E402
 from multisite import STAGES, Placement  # noqa: E402
 
 OBSERVATION = {"n_instances": 0.1, "utilization": 0.5, "pressure": 0.2,
@@ -94,3 +94,11 @@ def test_agent_and_hpa_together_are_rejected(tmp_path):
     config["stages"]["ffmpeg2"].update(agent={"url": "http://x"}, hpa={"min": 1, "max": 2, "cpu_target": 60})
     with pytest.raises(ValueError):
         LocalController("edge", config, StubBackend(), log_dir=str(tmp_path))
+
+
+def test_agents_disabled_keeps_fixed_replicas():
+    config = {"stages": {"ffmpeg2": {"replicas": 2, "agent": {"url": "http://unused"}},
+                         "grep": {"replicas": 1, "hpa": {"min": 1, "max": 3, "cpu_target": 60}}}}
+    disable_agents(config)
+    assert config["stages"] == {"ffmpeg2": {"replicas": 2},
+                                "grep": {"replicas": 1, "hpa": {"min": 1, "max": 3, "cpu_target": 60}}}

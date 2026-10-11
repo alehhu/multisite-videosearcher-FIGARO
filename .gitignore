@@ -12,3 +12,5 @@ tests/integration/.run/
 scripts/tunnel.env
 # per-site settings
 site.env
+# sources fetched by the scripts
+.cache/
