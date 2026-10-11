@@ -107,7 +107,7 @@ def invoke_workflow(workflow_name):
             job_dir = f"job-{uuid.uuid4()}"
         
         # Prepare MQTT message
-        search_str = params.get('find_str', 'speech')
+        search_str = params.get('find_str', 'depression')
         mqtt_message = {
             "dir": job_dir,
             "find_str": search_str,
