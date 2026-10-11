@@ -4,7 +4,7 @@ venv/
 .venv/
 .ipynb_checkpoints/
 # generated at runtime / per experiment
-seed/
+/seed/
 logs/
 results/
 tests/integration/.run/

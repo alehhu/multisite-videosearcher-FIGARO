@@ -9,7 +9,7 @@
 # and status in both directions (deploy/mosquitto/bridge-from-<site>.conf).
 #
 # --prepare-node (run on the site's node itself) creates /mnt/ramdisk with the input video
-# and, with --seeds <dir>, the seed directory produced by scripts/capture-seeds.sh.
+# and the seeds from data/seed (or from --seeds <dir>), see scripts/capture-seeds.sh.
 set -euo pipefail
 
 usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -45,9 +45,18 @@ if [[ "$PREPARE_NODE" == "true" ]]; then
     sudo mkdir -p /mnt/ramdisk /var/log/multisite
     sudo chmod 777 /mnt/ramdisk /var/log/multisite
     cp "$ROOT/data/video.mp4" /mnt/ramdisk/video.mp4
-    if [[ -n "$SEED_SRC" ]]; then
-        rm -rf /mnt/ramdisk/seed
-        cp -r "$SEED_SRC" /mnt/ramdisk/seed
+    SEEDS="${SEED_SRC:-$ROOT/data/seed}"
+    if [[ -d "$SEEDS" ]]; then
+        echo "Seeds from $SEEDS"
+        # sudo: seeds captured on this node were written by the pods, as root.
+        sudo rm -rf /mnt/ramdisk/seed
+        sudo cp -r "$SEEDS" /mnt/ramdisk/seed
+        sudo chmod -R a+rX /mnt/ramdisk/seed
+    elif [[ -n "$SEED_SRC" ]]; then
+        echo "Error: $SEED_SRC is not a directory" >&2; exit 1
+    else
+        echo "No seeds in data/seed yet: jobs cannot move between sites until they are"
+        echo "captured (scripts/capture-seeds.sh). /mnt/ramdisk/seed is left as it is."
     fi
     ls -la /mnt/ramdisk /mnt/ramdisk/seed 2>/dev/null || true
 fi
