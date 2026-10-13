@@ -3,6 +3,7 @@
 
     placement.py publish placements/split-ffmpeg2.yaml --broker <cloud-broker>:1883
     placement.py show --broker <cloud-broker>:1883
+    placement.py publish placements/all-edge.yaml --broker <edge-broker>:1883 --sites edge
 
 `publish` runs the make-before-break protocol:
   1. wait until no site is still draining a previous change;
@@ -12,6 +13,8 @@
 The local controllers then drain and stop the stages that left their site.
 
 It needs only the cloud broker: the edge status reaches it through the bridge.
+With --sites only the listed sites are waited for: use it when a single site is deployed
+(the other one would never answer), with the broker of that site.
 A placement agent can later take the place of this script.
 """
 
@@ -71,10 +74,14 @@ class Coordinator:
                     raise TimeoutError(f"timed out after {timeout}s waiting for {what}; status={self.status}")
                 self.changed.wait(min(remaining, 1.0))
 
-    def publish(self, stages, gateway, timeout, wait_drained=True):
+    def publish(self, stages, gateway, timeout, wait_drained=True, sites=SITES):
+        """`sites` are the deployed sites: the ones whose drains and acks are waited for."""
+        missing = sorted({gateway, *stages.values()} - set(sites))
+        if missing:
+            raise ValueError(f"the placement uses {missing}, not among the deployed sites {list(sites)}")
         if wait_drained:
             print("waiting for previous transitions to finish...")
-            self.wait_for(lambda: all(not self.status.get(s, {}).get("draining") for s in SITES),
+            self.wait_for(lambda: all(not self.status.get(s, {}).get("draining") for s in sites),
                           timeout, "sites to finish draining")
         with self.changed:
             last = max([0] + [p.version for p in (self.current, self.pending) if p])
@@ -93,8 +100,8 @@ class Coordinator:
               + (f", moving with replicas {replicas}" if replicas else ""))
         self.client.publish(multisite.PLACEMENT_PENDING_TOPIC, placement.to_json(), qos=1, retain=True).wait_for_publish()
         t0 = time.time()
-        self.wait_for(lambda: all(self.status.get(s, {}).get("acked_version", 0) >= v for s in SITES),
-                      timeout, f"acks for v{v} from {SITES}")
+        self.wait_for(lambda: all(self.status.get(s, {}).get("acked_version", 0) >= v for s in sites),
+                      timeout, f"acks for v{v} from {list(sites)}")
         print(f"v{v}: all sites ready after {time.time() - t0:.1f}s, putting it in force")
         self.client.publish(multisite.PLACEMENT_TOPIC, placement.to_json(), qos=1, retain=True).wait_for_publish()
         return placement
@@ -119,6 +126,9 @@ def main():
     parser.add_argument("file", nargs="?", help="placement YAML (publish)")
     parser.add_argument("--broker", default="localhost:1883", help="cloud broker host:port")
     parser.add_argument("--timeout", type=float, default=1800, help="seconds to wait at each step")
+    parser.add_argument("--sites", default=",".join(SITES),
+                        help="deployed sites, comma-separated (default: %(default)s); "
+                             "a single site when only one is deployed")
     parser.add_argument("--no-wait-drained", action="store_true",
                         help="do not wait for previous drains (debugging only)")
     args = parser.parse_args()
@@ -131,9 +141,13 @@ def main():
     if not args.file:
         parser.error("publish needs a placement file")
     stages, gateway = load_placement_file(args.file)
+    sites = [s for s in args.sites.split(",") if s]
+    if not sites or any(s not in SITES for s in sites):
+        parser.error(f"--sites must be among {SITES}")
     try:
-        coordinator.publish(stages, gateway, args.timeout, wait_drained=not args.no_wait_drained)
-    except TimeoutError as exc:
+        coordinator.publish(stages, gateway, args.timeout, wait_drained=not args.no_wait_drained,
+                            sites=sites)
+    except (TimeoutError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     finally:

@@ -62,7 +62,12 @@ It can be run again at any time (after a `git pull`, or after changing `site.env
 not during an experiment: it restarts the pods.
 
 A single server is enough to try the pipeline: set it up as `edge` (the site with the
-gateway and the collector), leave `BRIDGE_TO` empty and use `placements/all-edge.yaml`.
+gateway and the collector), leave `BRIDGE_TO` empty and publish `placements/all-edge.yaml`
+with `--sites edge`, so that the coordinator does not wait for the cloud:
+
+```bash
+.venv/bin/python scripts/placement.py publish placements/all-edge.yaml --broker localhost:31883 --sites edge
+```
 
 ## 3. Link between the sites (SSH tunnel)
 
@@ -108,7 +113,7 @@ If `data/seed/` is already in the repository there is nothing to do. Otherwise c
 them once, on a server set up as `edge`, with all the stages placed there:
 
 ```bash
-.venv/bin/python scripts/placement.py publish placements/all-edge.yaml --broker localhost:31883
+.venv/bin/python scripts/placement.py publish placements/all-edge.yaml --broker localhost:31883   # add --sites edge if the cloud is not up yet
 scripts/capture-seeds.sh --gateway localhost:30080     # one job; copies the seeds into data/seed
 git add data/seed && git commit -m "Add the seeds" && git push
 ```
@@ -127,7 +132,8 @@ and reaches the edge through the bridge:
 
 `publish` returns once the new table is in force; the old site keeps draining in the
 background (see `control/status/<site>` via `show`). Any YAML with the same shape works.
-With a single site, the broker is that site's own (`localhost:31883`).
+`publish` waits for every site to be ready: with a single site deployed, use that site's
+own broker (`localhost:31883`) and add `--sites <site>`, or it waits for the other forever.
 
 ## 6. Scaling agents
 

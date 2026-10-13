@@ -195,5 +195,8 @@ fi
 step "Site $SITE is up"
 kubectl -n "$NS" get pods
 echo
-echo "The stages run only where a placement puts them. Publish one (once, on the cloud broker):"
-echo "  .venv/bin/python scripts/placement.py publish placements/all-$SITE.yaml --broker <cloud-host>:31883"
+echo "The stages run only where a placement puts them. Publish one:"
+echo "  two sites, once, to the cloud broker:"
+echo "    .venv/bin/python scripts/placement.py publish placements/all-$SITE.yaml --broker <cloud-host>:31883"
+echo "  this site alone:"
+echo "    .venv/bin/python scripts/placement.py publish placements/all-$SITE.yaml --broker localhost:31883 --sites $SITE"

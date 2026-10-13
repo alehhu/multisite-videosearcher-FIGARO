@@ -88,5 +88,4 @@ fi
 
 "${KUBECTL[@]}" -n "$NS" rollout status deployment/mosquitto-deployment --timeout=120s
 "${KUBECTL[@]}" -n "$NS" rollout status deployment/local-controller --timeout=120s
-echo "Site $SITE deployed. Stages start once a placement is published:"
-echo "  scripts/placement.py publish placements/all-edge.yaml --broker <cloud-host>:31883"
+echo "Site $SITE deployed. Stages start once a placement is published (scripts/placement.py)."
