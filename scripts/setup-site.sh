@@ -32,6 +32,10 @@ done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# The kubectl of k3s reads /etc/rancher/k3s/k3s.yaml (root only) unless KUBECONFIG is set.
+if [[ -z "${KUBECONFIG:-}" && -f "$HOME/.kube/config" ]]; then
+    export KUBECONFIG="$HOME/.kube/config"
+fi
 NS=multisite
 IMAGES=(ffmpeg0 librosa ffmpeg1 ffmpeg2 deepspeech grep gateway timing-collector local-controller)
 
@@ -75,7 +79,7 @@ else ok "docker"; fi
 if ! command -v k3s >/dev/null; then
     fail "k3s" "curl -sfL https://get.k3s.io | sh -"
 elif ! command -v kubectl >/dev/null || ! kubectl get nodes >/dev/null 2>&1; then
-    fail "kubectl access to k3s" "mkdir -p ~/.kube && sudo k3s kubectl config view --raw > ~/.kube/config && chmod 600 ~/.kube/config"
+    fail "kubectl access to k3s" "mkdir -p ~/.kube && sudo k3s kubectl config view --raw > ~/.kube/config && chmod 600 ~/.kube/config && echo 'export KUBECONFIG=\$HOME/.kube/config' >> ~/.bashrc  (then log in again)"
 elif ! kubectl get nodes --no-headers | awk '{print $2}' | grep -qx Ready; then
     fail "k3s node Ready" "kubectl get nodes; sudo systemctl status k3s"
 else

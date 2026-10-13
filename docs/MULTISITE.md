@@ -17,7 +17,9 @@ not install anything.
 
 - An x86-64 machine: the base image of the stages and the agent image exist only for amd64.
 - Docker, usable without sudo.
-- k3s (ships metrics-server, needed for the CPU metrics), with `kubectl` working for your user.
+- k3s (ships metrics-server, needed for the CPU metrics), with `kubectl` working for your
+  user: copy the k3s configuration to `~/.kube/config` and set `KUBECONFIG` to it, since the
+  `kubectl` of k3s otherwise reads only the root-owned `/etc/rancher/k3s/k3s.yaml`.
 - Python 3 with `venv`.
 - chrony running and synchronised when two sites are used: per-stage times mix the two
   clocks. Check with `chronyc tracking` (offset should be well under 1 ms).
