@@ -85,7 +85,7 @@ ssh asks for the credentials of each hop. When it stops printing, the tunnel is 
 with `Ctrl-b d`. Check it from another shell on the edge server:
 
 ```bash
-nc -zv 10.42.0.1 41883      # cloud broker reachable through the tunnel
+timeout 3 bash -c '</dev/tcp/10.42.0.1/41883' && echo open || echo closed     # the tunnel is listening
 ```
 
 Then set `BRIDGE_TO="10.42.0.1:41883"` in the edge's `site.env` and run `setup-site.sh`

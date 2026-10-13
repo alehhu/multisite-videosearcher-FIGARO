@@ -70,16 +70,20 @@ step "Checking the prerequisites (site: $SITE, agents: $AGENTS)"
 if [[ "$(uname -m)" == "x86_64" ]]; then ok "x86-64 machine"
 else fail "x86-64 machine" "this is $(uname -m); the base image of the stages exists only for amd64"; fi
 
+# Docker is only needed to build the images.
+docker_problem() { if [[ "$SKIP_BUILD" == "true" ]]; then warn "$@"; else fail "$@"; fi; }
 if ! command -v docker >/dev/null; then
-    fail "docker" "install Docker Engine (https://docs.docker.com/engine/install/)"
+    docker_problem "docker" "install Docker Engine (https://docs.docker.com/engine/install/, the page of this distribution)"
 elif ! docker info >/dev/null 2>&1; then
-    fail "docker usable by $USER" "start the daemon, or: sudo usermod -aG docker $USER  (then log in again)"
+    docker_problem "docker usable by $USER" "start the daemon, or: sudo usermod -aG docker $USER  (then log in again on a new SSH connection; to run now: sg docker -c '$0')"
 else ok "docker"; fi
 
 if ! command -v k3s >/dev/null; then
     fail "k3s" "curl -sfL https://get.k3s.io | sh -"
+elif command -v systemctl >/dev/null && ! systemctl is-active --quiet k3s; then
+    fail "k3s running" "it is installed but not running: sudo journalctl -u k3s -n 30  (another Kubernetes on this machine, e.g. MicroK8s, uses the same ports)"
 elif ! command -v kubectl >/dev/null || ! kubectl get nodes >/dev/null 2>&1; then
-    fail "kubectl access to k3s" "mkdir -p ~/.kube && sudo k3s kubectl config view --raw > ~/.kube/config && chmod 600 ~/.kube/config && echo 'export KUBECONFIG=\$HOME/.kube/config' >> ~/.bashrc  (then log in again)"
+    fail "kubectl access to k3s" "mkdir -p ~/.kube && sudo k3s kubectl config view --raw > ~/.kube/config && chmod 600 ~/.kube/config && echo 'export KUBECONFIG=\$HOME/.kube/config' >> ~/.bashrc  (it replaces ~/.kube/config: keep a copy if there is one)"
 elif ! kubectl get nodes --no-headers | awk '{print $2}' | grep -qx Ready; then
     fail "k3s node Ready" "kubectl get nodes; sudo systemctl status k3s"
 else
