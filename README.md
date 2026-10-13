@@ -13,8 +13,9 @@ client ──► EDGE (Modena) ◄──MQTT bridge──► CLOUD (Milano)
   each site starts the stages assigned to it and drains the ones that moved away.
 - Files are not transferred between sites: a job arriving from the other site reads its
   input from a local seed copy, so the experiment measures latency, not bandwidth.
-- A stage can be scaled by an external agent: at every observation window the controller
-  sends it the stage's state and applies the number of instances it returns.
+- Each stage is scaled by a reinforcement-learning agent running on the same site: at
+  every observation window the controller sends it the stage's state and applies the
+  number of instances it returns. The agents can be switched off (fixed replicas).
 - Each site logs per-job timings, pod counts, placement changes, and the observations
   and decisions of the scaling agents.
 
@@ -28,19 +29,31 @@ functions/         the 6 pipeline stages
 gateway/           HTTP -> MQTT entry point (edge)
 controller/        per-site controller
 monitoring/        timing collector
-deploy/            Kubernetes manifests (base + edge/cloud overlays), broker bridge configs
+deploy/            Kubernetes manifests (base, scaling agents, site overlays), broker bridge configs
 placements/        example placement tables
-scripts/           build, deploy, placement changes, seeds, tunnel, link probe
+scripts/           site setup, build, deploy, placement changes, seeds, tunnel, link probe
 load/locust/       workload generator
 tests/             unit tests and a two-broker integration test
 data/video.mp4     benchmark input (30 s clip)
+data/seed/         input of every stage, once captured
+site.env.example   per-server settings (copy to site.env)
 ```
 
 ## Usage
 
-See [docs/MULTISITE.md](docs/MULTISITE.md).
+On each server, from a clone of this repository:
+
+```bash
+cp site.env.example site.env      # which site this is
+scripts/setup-site.sh
+```
+
+Then publish a placement. The whole procedure is in [docs/MULTISITE.md](docs/MULTISITE.md).
 
 ## Origin
 
 The pipeline stages, gateway, timing collector and workload generator come from
 [mqtt-faas-hpa-baseline](https://github.com/alehhu/mqtt-faas-hpa-baseline) (commit `7b8e7a9`).
+The scaling agents are the DQN agents of
+[ServerlessAutoscalingWithRL](https://github.com/sampozz/ServerlessAutoscalingWithRL)
+(commit `0414a04`), built unchanged by `scripts/build-agent-image.sh`.
