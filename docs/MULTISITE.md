@@ -32,17 +32,18 @@ not install anything.
 
 ```bash
 git clone <this repository> && cd multisite-videosearcher-FIGARO
-cp site.env.example site.env      # set SITE, and BRIDGE_TO on one of the two sites
+$EDITOR site.env                  # set SITE, and BRIDGE_TO on one of the two sites
 scripts/setup-site.sh
 ```
 
-`site.env` is not tracked. It holds:
+`site.env` comes with the values for a single site with fixed replicas, and explains
+each setting. Edit it on each server and keep the edited copy local (do not commit it):
 
 | Setting | Meaning |
 |---|---|
 | `SITE` | `edge` or `cloud` |
 | `BRIDGE_TO` | `host:port` of the other site's broker, on exactly one site: the one that can reach the other. Empty on the other site, and for a single site |
-| `AGENTS` | `true` (default): the stages are scaled by the DQN agents. `false`: fixed replicas |
+| `AGENTS` | `false` (default): fixed replicas. `true`: the stages are scaled by the DQN agents |
 
 The script builds the images (the six stages, gateway, timing collector, controller and,
 with `AGENTS=true`, the agents), imports them into k3s, creates `.venv` for the scripts,

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Set up one site of the multi-site pipeline on this server, from a fresh clone.
 #
-#   cp site.env.example site.env      # say which site this is, once
+#   edit site.env                     # say which site this is, once
 #   scripts/setup-site.sh
 #
 #   scripts/setup-site.sh --check        # only check the prerequisites
@@ -9,7 +9,7 @@
 #
 # Steps: check the prerequisites, build the images, import them into k3s, create the
 # Python environment for the scripts, prepare /mnt/ramdisk, deploy the site (the MQTT
-# bridge if BRIDGE_TO is set, the scaling agents unless AGENTS is false). It can be run
+# bridge if BRIDGE_TO is set, the scaling agents if AGENTS is true). It can be run
 # again at any time, but not during an experiment: it restarts the pods.
 #
 # Nothing is installed on the server: a missing prerequisite stops the script with the
@@ -36,13 +36,13 @@ NS=multisite
 IMAGES=(ffmpeg0 librosa ffmpeg1 ffmpeg2 deepspeech grep gateway timing-collector local-controller)
 
 if [[ ! -f "$ROOT/site.env" ]]; then
-    echo "Error: site.env not found. Run: cp site.env.example site.env  (then set SITE)" >&2; exit 1
+    echo "Error: site.env not found. Restore it with: git checkout site.env" >&2; exit 1
 fi
 # shellcheck disable=SC1091
 source "$ROOT/site.env"
 SITE="${SITE:-}"
 BRIDGE_TO="${BRIDGE_TO:-}"
-AGENTS="${AGENTS:-true}"
+AGENTS="${AGENTS:-false}"
 if [[ "$SITE" != "edge" && "$SITE" != "cloud" ]]; then
     echo "Error: SITE in site.env must be edge or cloud" >&2; exit 1
 fi

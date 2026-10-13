@@ -36,7 +36,7 @@ load/locust/       workload generator
 tests/             unit tests and a two-broker integration test
 data/video.mp4     benchmark input (30 s clip)
 data/seed/         input of every stage, once captured
-site.env.example   per-server settings (copy to site.env)
+site.env           settings of the server (edited locally on each one)
 ```
 
 ## Usage
@@ -44,7 +44,7 @@ site.env.example   per-server settings (copy to site.env)
 On each server, from a clone of this repository:
 
 ```bash
-cp site.env.example site.env      # which site this is
+$EDITOR site.env                  # which site this is
 scripts/setup-site.sh
 ```
 
