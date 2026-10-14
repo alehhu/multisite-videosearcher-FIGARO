@@ -164,7 +164,22 @@ Each replica of a stage requests one CPU: set `max` to what the server can actua
 The `res_time_threshold` values come from another experiment and must be recalibrated on
 the times measured here.
 
-## 7. Run the load and collect the logs
+## 7. Measure the service times
+
+Before an experiment, and whenever a server changes, measure each stage without queueing:
+jobs are sent one at a time, so every stage runs alone. Publish `all-edge` or `all-cloud`
+first, to measure the site you want, then on the edge server:
+
+```bash
+.venv/bin/python scripts/profile_stages.py --gateway localhost:30080 -n 20 --csv profile-edge.csv
+```
+
+It prints mean, standard deviation, minimum and maximum of every stage, of the whole job
+and of the overhead (the job's duration minus its stages: broker hops, bridge, and up to
+0.1 s of polling in the gateway). The first job is left out (`--warmup`): the first run on
+a fresh pod is slower. These are the times to compare with `res_time_threshold`.
+
+## 8. Run the load and collect the logs
 
 ```bash
 curl -X POST http://<edge-host>:30080/workflow/invoke/videosearcher_workflow \
@@ -186,7 +201,7 @@ The timings of all the stages travel with the job, so `timing.jsonl` is written 
 the gateway's site. For resources and cost use `alive` (it includes pods that are shutting
 down but still working), not `desired` or `ready`.
 
-## 8. Clean up between experiments
+## 9. Clean up between experiments
 
 The workers keep every job directory under `/mnt/ramdisk` (about 1 MB each time a job moves
 to the other site). On each node:
