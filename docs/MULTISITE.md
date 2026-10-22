@@ -149,7 +149,15 @@ POST http://agent-<stage>:5000/action
      {"observation": {"n_instances", "utilization", "pressure", "queue_length_dominant", "workload"}}
 ```
 
-(all normalised to 0..1) and scales the stage to the `action` in the reply, kept between
+(all normalised to 0..1). The state is computed as the controller of ServerlessAutoscalingWithRL
+computes it on Serverledge: every 5 s a sample with the response and service time of the
+last job the stage finished on this site (kept until the next one), the arrivals of the
+last 60 s (six 10 s buckets) and the ready replicas; pressure, queue length and utilization
+per sample; then the mean of the samples of the window. A stage with no samples in the
+window is not asked. `observations.jsonl` also keeps, under `per_job`, the same times
+averaged over the jobs of the window, for the analysis.
+
+The controller scales the stage to the `action` in the reply, kept between
 the `min` and `max` of the stage's `agent` block in `deploy/k8s/base/controller-config.yaml`.
 If the agent does not answer, the replicas stay as they are. A stage that is being moved
 to the other site is not rescaled until the move is complete; it starts on the new site

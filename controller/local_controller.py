@@ -45,6 +45,13 @@ class StageWindow:
         self.ready_samples = []
         self.alive_samples = []
         self.cpu_samples = []
+        self.agent_samples = []  # one dict per sample, see LocalController._agent_sample
+
+
+# Workload as Serverledge computes it (sedge_workload in internal/metrics/metrics.go):
+# arrivals in the current 10 s bucket and the 5 before it, divided by 60 s.
+WORKLOAD_BUCKET_S = 10
+WORKLOAD_BUCKETS = 6
 
 
 class LocalController:
@@ -77,6 +84,10 @@ class LocalController:
         self.last_arrival = {s: 0.0 for s in STAGES}
         self.window = {s: StageWindow() for s in STAGES}
         self.window_start = time.time()
+        # Kept across windows, like the Serverledge gauges the DQN controller reads:
+        # the times of the last job a stage finished on this site, and its recent arrivals.
+        self.last_times = {s: {"response_time": 0.0, "service_time": 0.0} for s in STAGES}
+        self.recent_arrivals = {s: [] for s in STAGES}
         self.lambda_arrivals = 0     # new jobs published by the gateway (gateway site only)
 
         os.makedirs(log_dir, exist_ok=True)
@@ -164,6 +175,7 @@ class LocalController:
                 self.in_flight[target][job] = now
                 self.last_arrival[target] = now
                 self.window[target].arrivals += 1
+                self.recent_arrivals[target].append(now)
             # New job from the gateway of this site (wherever the first stage runs).
             if target == STAGES[0] and sites.get("gateway") == self.site:
                 self.lambda_arrivals += 1
@@ -191,9 +203,11 @@ class LocalController:
         prev_published = ts.get(f"{GROUPS[prev]}_published") if prev else ts.get("gateway_published")
         w = self.window[stage]
         w.service_times.append(end - start)
+        self.last_times[stage]["service_time"] = end - start
         if prev_published is not None:
             # Queueing + (if the previous stage is remote) WAN hop and seed copy + service.
             w.response_times.append(end - prev_published)
+            self.last_times[stage]["response_time"] = end - prev_published
 
     # Placement transitions
 
@@ -343,6 +357,7 @@ class LocalController:
                     w.alive_samples.append(alive)
                     if stage in cpu:
                         w.cpu_samples.append(cpu[stage])
+                    w.agent_samples.append(self._agent_sample(stage, now, ready))
         self.pods_file.flush()
         if counts_changed:
             self._publish_status()
@@ -379,9 +394,10 @@ class LocalController:
             self.window_start = now
             self.lambda_arrivals = 0
             # Only stages that are settled here: not the ones being drained or started.
+            # Without samples there is no state to send (RLAgent.action keeps its last action).
             scalable = [s for s in stages if self.stage_cfg[s].get("agent")
                         and self.current is not None and self.current.site_of(s) == self.site
-                        and s not in self.draining]
+                        and s not in self.draining and stages[s]["raw"]["samples"] > 0]
         # Outside the lock: an agent that is slow to answer must not block job tracking.
         for stage in scalable:
             stages[stage]["agent"] = self._ask_agent(stage, stages[stage]["observation"])
@@ -389,26 +405,55 @@ class LocalController:
             f.write(json.dumps(record) + "\n")
         self.client.publish(multisite.observations_topic(self.site), json.dumps(record), qos=1)
 
+    def _agent_sample(self, stage, now, n_instances):
+        """One sample of the DQN state, computed as RLAgent.update_data does at every
+        METRICS_INTERVAL (ServerlessAutoscalingWithRL/figaro/controller/rlagent.py).
+
+        Its inputs follow the Serverledge gauges: response and service time are those of
+        the last job the stage finished here (they keep their value until the next one),
+        the workload counts the arrivals of the last six 10 s buckets.
+        """
+        bucket = int(now) // WORKLOAD_BUCKET_S
+        oldest = bucket - WORKLOAD_BUCKETS + 1
+        arrivals = [t for t in self.recent_arrivals[stage] if int(t) // WORKLOAD_BUCKET_S >= oldest]
+        self.recent_arrivals[stage] = arrivals
+        workload = len(arrivals) / (WORKLOAD_BUCKETS * WORKLOAD_BUCKET_S)
+        response_time = self.last_times[stage]["response_time"]
+        service_time = self.last_times[stage]["service_time"]
+        threshold = self.stage_cfg[stage].get("res_time_threshold", 0)
+        return {
+            "workload": workload,
+            "response_time": response_time,
+            "service_time": service_time,
+            "n_instances": n_instances,
+            "theoretical_utilization": min(workload * service_time / n_instances if n_instances > 0 else 0.0, 1.0),
+            "pressure": response_time / threshold if threshold > 0 else 0.0,
+            "queue_length_dominant": (response_time - service_time) / service_time if service_time > 0 else 0.0,
+        }
+
     def _stage_observation(self, stage, w, elapsed, norm):
         mean = lambda xs: sum(xs) / len(xs) if xs else 0.0
+        # The state sent to the agent: the mean of the samples of the window, as
+        # RLAgent.action does with its cumulative data.
+        raw = {key: mean([s[key] for s in w.agent_samples])
+               for key in ("workload", "service_time", "response_time", "n_instances",
+                           "theoretical_utilization", "pressure", "queue_length_dominant")}
+        raw.update({
+            "samples": len(w.agent_samples),
+            "n_alive": mean(w.alive_samples),
+            "docker_utilization": min(mean(w.cpu_samples), 1.0),
+            "arrivals": w.arrivals,
+            "completions": len(w.service_times),
+        })
+        # The same quantities from the jobs of the window, for the analysis only.
         workload = w.arrivals / elapsed
         service_time = mean(w.service_times)
         response_time = mean(w.response_times)
-        n_instances = mean(w.ready_samples)
-        threshold = self.stage_cfg[stage].get("res_time_threshold", 0)
-        theoretical_utilization = min(workload * service_time / n_instances, 1.0) if n_instances > 0 else 0.0
-        raw = {
+        per_job = {
             "workload": workload,
             "service_time": service_time,
             "response_time": response_time,
-            "n_instances": n_instances,
-            "n_alive": mean(w.alive_samples),
-            "docker_utilization": min(mean(w.cpu_samples), 1.0),
-            "theoretical_utilization": theoretical_utilization,
-            "pressure": response_time / threshold if threshold > 0 else 0.0,
             "queue_length_dominant": (response_time - service_time) / service_time if service_time > 0 else 0.0,
-            "arrivals": w.arrivals,
-            "completions": len(w.service_times),
         }
         # Same normalisation as ServerlessAutoscalingWithRL/figaro/controller/rlagent.py.
         max_workload = norm.get("max_workload", 0.25)
@@ -422,7 +467,7 @@ class LocalController:
             "queue_length_dominant": max(0.0, min(raw["queue_length_dominant"], q_clip)) / q_clip,
             "workload": min(1.0, raw["workload"] / max_workload),
         }
-        return {"raw": raw, "observation": observation}
+        return {"raw": raw, "per_job": per_job, "observation": observation}
 
     def _ask_agent(self, stage, observation):
         """Send the observation to the stage's agent and apply the replicas it returns.
