@@ -187,16 +187,123 @@ and of the overhead (the job's duration minus its stages: broker hops, bridge, a
 0.1 s of polling in the gateway). The first job is left out (`--warmup`): the first run on
 a fresh pod is slower. These are the times to compare with `res_time_threshold`.
 
-## 8. Run the load and collect the logs
+## 8. Run an experiment
+
+An experiment is one hour of load from Locust, on the cloud VM, against the edge gateway.
+Everything about a run ends up in one directory on your machine, `results/<run>/` (ignored
+by git: keep a backup of it):
+
+```
+results/<run>/
+  logs/edge/, logs/cloud/   copies of /var/log/multisite of the two servers
+  request_timestamps.csv    Locust: every request, send time and end-to-end response time
+  workloadProfile.csv       Locust: the load it planned, requests per second
+  jobs.csv, stages.csv,     written by summarize_run.py --out (see below)
+  replicas.csv, agents.csv
+  plots/                    written by the notebook
+```
+
+### Before the run
+
+1. **Code up to date.** After a `git pull` that changed the stages, the controller or the
+   agents, run `scripts/setup-site.sh` on each server (it rebuilds the images); otherwise
+   nothing to do.
+2. **Checks**, on each server:
+   ```bash
+   chronyc tracking | grep 'System time'     # well under 1 ms
+   kubectl get pods -n multisite              # all Running
+   ```
+   and, on the edge, that the tunnel is up (step 3).
+3. **Clean up the previous run**, on each server, once its logs are saved (see "After the
+   run"):
+   ```bash
+   scripts/clean-ramdisk.sh --delete          # job directories; seed/ and video.mp4 stay
+   sudo truncate -s 0 /var/log/multisite/*    # empty the logs
+   ```
+   Empty the log files with `truncate`, do not delete or move them: the controller keeps
+   `pods.csv` open. `summarize_run.py` takes the first job in the logs as the start of the
+   run, so logs left over from an earlier run would mix the two.
+4. **Placement**, from the cloud VM:
+   ```bash
+   .venv/bin/python scripts/placement.py publish placements/split-ffmpeg2.yaml --broker localhost:31883
+   .venv/bin/python scripts/placement.py show --broker localhost:31883
+   ```
+
+### The run
+
+On the cloud VM, in a `tmux` session (the run lasts one hour):
 
 ```bash
-curl -X POST http://<edge-host>:30080/workflow/invoke/videosearcher_workflow \
+cd load/locust
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt     # once
+GATEWAY_HOST=localhost GATEWAY_PORT=38080 .venv/bin/locust -f locust_test.py --headless -u 1 -r 1 --run-time 60m
+```
+
+Port 38080 is the edge gateway through the tunnel (step 3). Locust sends about 380 jobs:
+two 20-minute waves with no load in between, up to about 0.28 jobs/s. It stops after
+60 minutes even if jobs are still in the pipeline; they are not counted. It writes
+`request_timestamps.csv` and `workloadProfile.csv` in `load/locust/`.
+
+A single job by hand, to check the pipeline:
+
+```bash
+curl -X POST http://localhost:38080/workflow/invoke/videosearcher_workflow \
      -H 'Content-Type: application/json' -d '{"params": {}, "Async": false}'
 ```
 
-Locust: `load/locust/locust_test.py` (`GATEWAY_HOST` and `GATEWAY_PORT` select the edge gateway).
+### After the run
 
-Logs on each node, under `/var/log/multisite/`:
+1. **Save the logs on each server**, with the site's name (`edge` or `cloud`):
+   ```bash
+   mkdir -p ~/runs/<run>/<site> && cp /var/log/multisite/* ~/runs/<run>/<site>/
+   ```
+   and, on the cloud VM, Locust's files:
+   ```bash
+   cp load/locust/request_timestamps.csv load/locust/workloadProfile.csv ~/runs/<run>/
+   ```
+2. **Copy them to your machine**, into the repository (the SSH hosts are the ones you log in
+   with, jump hosts included):
+   ```bash
+   mkdir -p results/<run>/logs
+   scp -r <edge-ssh-host>:runs/<run>/edge results/<run>/logs/
+   scp -r <cloud-ssh-host>:runs/<run>/cloud results/<run>/logs/
+   scp '<cloud-ssh-host>:runs/<run>/*.csv' results/<run>/
+   ```
+3. **Summarise and check the run:**
+   ```bash
+   .venv/bin/python scripts/summarize_run.py results/<run>/logs/edge results/<run>/logs/cloud --out results/<run>
+   ```
+   The run lasts `--duration` seconds (default 3600) from its first job: only what ends
+   inside it counts, and the jobs still in the pipeline at the end are reported apart. It
+   prints the jobs sent, completed, failed and duplicated; per 5 minutes the job duration
+   and the wait of every stage; the waits of the hops between the sites; the service time of
+   every stage on every site; the decisions of the agents and the replicas that stayed not
+   ready. It ends with four checks (no failed job, no duplicate, every agent answered,
+   replicas ready in time) and exits with an error if one fails: then the run is to be
+   looked at before being used.
+
+   With `--out` it writes the CSV files used by the notebook, times in seconds from the start
+   of the run: `jobs.csv` (one row per job), `stages.csv` (one row per job and stage: site,
+   pod, service time, wait), `replicas.csv` (replicas of every stage on every site, every
+   5 s) and `agents.csv` (every observation window: the state, what the agent received, its
+   answer, the replicas applied).
+4. **Plots and tables:** `analysis/run_analysis.ipynb`. The first time:
+   ```bash
+   python3 -m venv analysis/.venv && analysis/.venv/bin/pip install -r analysis/requirements.txt
+   ```
+   then
+   ```bash
+   analysis/.venv/bin/jupyter notebook analysis/run_analysis.ipynb
+   ```
+   set `RUNS` in the first cell (e.g. `{"old agents": "../results/<run>"}`; up to three runs
+   to compare them) and run all the cells. Each section says what its plot shows and how
+   to read it; the figures are also saved as PNG under `results/<run>/plots/`. Section 5 is
+   the profiling: the service time of every stage and the thresholds it implies.
+5. **Before the next run**, clean up as in "Before the run", step 3.
+
+### The logs
+
+Under `/var/log/multisite/` on each server:
 
 | File | Site | Content |
 |---|---|---|
@@ -208,45 +315,6 @@ Logs on each node, under `/var/log/multisite/`:
 The timings of all the stages travel with the job, so `timing.jsonl` is written only on
 the gateway's site. For resources and cost use `alive` (it includes pods that are shutting
 down but still working), not `desired` or `ready`.
-
-At the end, copy `/var/log/multisite` of each site next to each other and summarise the run:
-
-```bash
-.venv/bin/python scripts/summarize_run.py logs-edge logs-cloud --duration 3600 --out results/run-1
-```
-
-The run lasts `--duration` seconds from its first job: only what ends inside it counts, and
-the jobs still in the pipeline at the end are reported apart. It prints the jobs sent,
-completed, failed and duplicated; per 5 minutes the job duration and the wait of every
-stage; the waits of the hops between the sites; the service time of every stage on every
-site; the decisions of the agents and the replicas that stayed not ready.
-
-With `--out` it writes four CSV files for analysis and plots, with times in seconds from
-the start of the run: `jobs.csv` (one row per job), `stages.csv` (one row per job and
-stage: site, pod, service time, wait), `replicas.csv` (replicas of every stage on every
-site, every 5 s) and `agents.csv` (every observation window: the state, what the agent
-received, its answer, the replicas applied). Locust writes the client side of the same
-run: `request_timestamps.csv` (send time and end-to-end response time of every request).
-
-The plots and tables are in `analysis/run_analysis.ipynb`. Copy Locust's
-`request_timestamps.csv` and `workloadProfile.csv` into the run's directory, list the runs
-to show (up to three, compared side by side) in its first cell and run it:
-
-```bash
-python3 -m venv analysis/.venv && analysis/.venv/bin/pip install -r analysis/requirements.txt
-analysis/.venv/bin/jupyter notebook analysis/run_analysis.ipynb
-``` It exits with an error if a job failed or was duplicated,
-an agent did not answer, or replicas stayed not ready longer than `--max-not-ready`.
-
-## 9. Clean up between experiments
-
-The workers keep every job directory under `/mnt/ramdisk` (about 1 MB each time a job moves
-to the other site). On each node:
-
-```bash
-scripts/clean-ramdisk.sh            # dry run: how many directories, how many MB
-scripts/clean-ramdisk.sh --delete   # removes job-* only; seed/ and video.mp4 stay
-```
 
 ## Local test without servers
 
