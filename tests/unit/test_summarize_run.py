@@ -17,7 +17,8 @@ def job(job_id, received, logged_at, sites=None, wait=0.01, topic="pipeline/edge
     sites = sites or {s: "edge" for s in STAGES}
     stages, t = [], received
     for stage in STAGES:
-        stages.append({"stage": stage, "site": sites[stage], "start": t + wait, "end": t + wait + 1, "wait": wait})
+        stages.append({"stage": stage, "site": sites[stage], "start": t + wait, "end": t + wait + 1,
+                       "duration": 1, "wait": wait})
         t += wait + 1
     return {"job_id": job_id, "topic": topic, "logged_at": logged_at, "error": error,
             "timestamps": {"gateway_received": received}, "sites": {"gateway": "edge", **sites},
@@ -69,3 +70,34 @@ def test_not_ready_stretches_while_placed():
     pods = [row(1000, 2, 2), row(1005, 3, 2), row(1010, 3, 2), row(1015, 3, 3),
             row(1020, 4, 3), row(1025, 4, 4), row(1030, 0, 0, placed="0")]
     assert summarize_run.not_ready_stretches(pods, START, END) == {("edge", "ffmpeg2"): (10.0, 15.0)}
+
+
+def test_service_times_by_stage_and_site():
+    sites = {s: ("cloud" if s == "grep" else "edge") for s in STAGES}
+    times = summarize_run.service_times([job("a", 1010, 1020), job("b", 1020, 1030, sites=sites)])
+    assert times[("grep", "edge")] == [1] and times[("grep", "cloud")] == [1]
+    assert len(times[("deepspeech", "edge")]) == 2
+
+
+def test_export_writes_the_csv_files(tmp_path):
+    import csv
+    agent = {"previous": 1, "action": 3, "applied": 3, "error": None}
+    logs = {
+        "timing": [job("a", 1010, 1020), job("a", 1010, 1020), job("b", 4590, 4650)],
+        "observations": [{"t": 1120, "site": "edge", "window_s": 120, "placement_version": 1,
+                          "stages": {"ffmpeg2": {"raw": {"pressure": 0.5}, "observation": {"pressure": 0.17},
+                                                 "agent": agent}}}],
+        "pods": [{"timestamp": "1005", "site": "edge", "stage": "ffmpeg2", "placed_here": "1", "draining": "0",
+                  "desired": "2", "ready": "1", "alive": "2", "terminating": "0", "hpa": "0"}],
+    }
+    written = summarize_run.export(str(tmp_path), logs, START, END)
+    assert written == {"jobs.csv": 2, "stages.csv": 12, "replicas.csv": 1, "agents.csv": 1}
+    read = lambda name: list(csv.DictReader(open(tmp_path / name)))
+    jobs = read("jobs.csv")
+    assert [(j["job_id"], j["arrival"], j["ended_in_run"]) for j in jobs] == [("a", "10.0", "1"), ("b", "3590.0", "0")]
+    assert float(jobs[0]["duration"]) == pytest.approx(6 * 1.01)
+    first = read("stages.csv")[0]
+    assert (first["stage"], first["site"], first["service_time"], first["wait"]) == ("ffmpeg0", "edge", "1", "0.01")
+    assert read("replicas.csv")[0]["t"] == "5.0"
+    row = read("agents.csv")[0]
+    assert (row["t"], row["pressure"], row["obs_pressure"], row["applied"]) == ("120.0", "0.5", "0.17", "3")

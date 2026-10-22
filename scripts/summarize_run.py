@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarise an experiment from the logs of the sites.
 
-    summarize_run.py <logs-edge> [<logs-cloud>] [--duration 3600] [--start <epoch>]
+    summarize_run.py <logs-edge> [<logs-cloud>] [--duration 3600] [--start <epoch>] [--out <dir>]
 
 Each argument is a copy of /var/log/multisite of one site. The run lasts `--duration`
 seconds from its first job (or from `--start`): only what happens inside it is counted,
@@ -12,8 +12,16 @@ It prints:
   - per 5 minutes: jobs completed, job duration, and the wait of every stage (queueing,
     plus the hop from the previous stage), to see whether the queues keep growing;
   - the waits of the hops between the two sites against the local ones (bridge stalls);
+  - the service time of every stage on every site (mean, std, percentiles);
   - the decisions of the scaling agents, and the replicas that stayed not ready;
 and a final check of the conditions for the pipeline to have held.
+
+With --out it also writes, for analysis and plots (times in seconds from the start):
+  jobs.csv      one row per job: arrival, end, duration, outcome
+  stages.csv    one row per job and stage: site, pod, start, end, service time, wait
+  replicas.csv  the replicas of every stage on every site, every 5 s
+  agents.csv    one row per observation window and stage: the state, what was sent to the
+                agent, its answer and the replicas applied
 """
 
 import argparse
@@ -150,6 +158,87 @@ def not_ready_stretches(pods, start, end):
     return result
 
 
+def service_times(completed):
+    """{(stage, site): [seconds]} of the completed jobs."""
+    times = {}
+    for record in completed:
+        for s in record["stages"]:
+            times.setdefault((s["stage"], s.get("site", "?")), []).append(s["duration"])
+    return times
+
+
+def unique_jobs(timing):
+    seen, jobs = set(), []
+    for record in timing:
+        if record["job_id"] not in seen:
+            seen.add(record["job_id"])
+            jobs.append(record)
+    return jobs
+
+
+def write_csv(path, header, rows):
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+
+def rel(t, start):
+    return None if t is None else round(float(t) - start, 4)
+
+
+RAW_FIELDS = ["workload", "service_time", "response_time", "n_instances", "theoretical_utilization",
+              "pressure", "queue_length_dominant", "samples", "n_alive", "docker_utilization",
+              "arrivals", "completions"]
+OBSERVATION_FIELDS = ["n_instances", "utilization", "pressure", "queue_length_dominant", "workload"]
+
+
+def export(out, logs, start, end):
+    """Write jobs.csv, stages.csv, replicas.csv and agents.csv into `out`."""
+    os.makedirs(out, exist_ok=True)
+    jobs = unique_jobs(logs["timing"])
+    job_rows, stage_rows = [], []
+    for r in jobs:
+        failed = bool(r.get("error")) or r["topic"].endswith("/dlq")
+        received = r["timestamps"].get("gateway_received")
+        finished = r["stages"][-1]["end"] if r["stages"] else None
+        job_rows.append([r["job_id"], "failed" if failed else "completed",
+                         (r.get("error") or {}).get("stage", "") if failed else "",
+                         rel(received, start), rel(finished, start),
+                         round(finished - received, 4) if received and finished else None,
+                         int(r["logged_at"] <= end)])
+        for s in r["stages"]:
+            stage_rows.append([r["job_id"], s["stage"], s.get("site"), s.get("pod"), s.get("placement_version"),
+                               rel(s["start"], start), rel(s["end"], start), round(s["duration"], 4),
+                               s.get("wait") and round(s["wait"], 4), s.get("seed_copy") and round(s["seed_copy"], 4)])
+    write_csv(os.path.join(out, "jobs.csv"),
+              ["job_id", "outcome", "failed_stage", "arrival", "end", "duration", "ended_in_run"], job_rows)
+    write_csv(os.path.join(out, "stages.csv"),
+              ["job_id", "stage", "site", "pod", "placement_version", "start", "end", "service_time",
+               "wait", "seed_copy"], stage_rows)
+
+    replica_rows = sorted([rel(row["timestamp"], start), row["site"], row["stage"], row["placed_here"],
+                           row["draining"], row["desired"], row["ready"], row["alive"], row["terminating"],
+                           row["hpa"]] for row in logs["pods"])
+    write_csv(os.path.join(out, "replicas.csv"),
+              ["t", "site", "stage", "placed_here", "draining", "desired", "ready", "alive", "terminating", "hpa"],
+              replica_rows)
+
+    agent_rows = []
+    for o in sorted(logs["observations"], key=lambda o: o["t"]):
+        for stage, state in o["stages"].items():
+            raw, obs, agent = state.get("raw", {}), state.get("observation", {}), state.get("agent") or {}
+            agent_rows.append([rel(o["t"], start), o["site"], stage, o.get("window_s"), o.get("placement_version")]
+                              + [raw.get(k) for k in RAW_FIELDS] + [obs.get(k) for k in OBSERVATION_FIELDS]
+                              + [agent.get("previous"), agent.get("action"), agent.get("applied"), agent.get("error")])
+    write_csv(os.path.join(out, "agents.csv"),
+              ["t", "site", "stage", "window_s", "placement_version"] + RAW_FIELDS
+              + [f"obs_{k}" for k in OBSERVATION_FIELDS] + ["replicas_before", "action", "applied", "agent_error"],
+              agent_rows)
+    return {"jobs.csv": len(job_rows), "stages.csv": len(stage_rows),
+            "replicas.csv": len(replica_rows), "agents.csv": len(agent_rows)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("dirs", nargs="+", help="copies of /var/log/multisite, one per site")
@@ -158,6 +247,7 @@ def main():
     parser.add_argument("--bucket", type=float, default=300, help="seconds per row of the table (default: %(default)s)")
     parser.add_argument("--max-not-ready", type=float, default=120,
                         help="longest time a stage may have replicas not ready (default: %(default)s s)")
+    parser.add_argument("--out", help="directory where to write the CSV files")
     args = parser.parse_args()
 
     logs = load(args.dirs)
@@ -189,6 +279,16 @@ def main():
             print(f"  {name:<14} n={len(values):<5} median={statistics.median(values):.3f} "
                   f"p95={percentile(values, 0.95):.3f} max={max(values):.3f}")
 
+    print("\nService time (seconds):")
+    print(f"  {'stage':<11} {'site':<6} {'n':>5} {'mean':>8} {'std':>7} {'p5':>8} {'p50':>8} {'p95':>8}")
+    times = service_times(completed)
+    for stage in STAGES:
+        for (name, site), values in sorted(times.items()):
+            if name == stage:
+                std = statistics.stdev(values) if len(values) > 1 else 0.0
+                print(f"  {stage:<11} {site:<6} {len(values):>5} {mean(values):>8.3f} {std:>7.3f} "
+                      f"{percentile(values, 0.05):>8.3f} {percentile(values, 0.5):>8.3f} {percentile(values, 0.95):>8.3f}")
+
     decisions = agent_decisions(logs["observations"], start, end)
     errors = 0
     print("\nAgents (minute: replicas before -> applied):")
@@ -217,6 +317,10 @@ def main():
         ("every agent answered", errors == 0),
         ("replicas became ready in time", not slow),
     ]
+    if args.out:
+        written = export(args.out, logs, start, end)
+        print(f"\nWritten to {args.out}: " + ", ".join(f"{name} ({n} rows)" for name, n in written.items()))
+
     print("\nChecks:")
     for name, ok in checks:
         print(f"  {'ok  ' if ok else 'FAIL'} {name}")

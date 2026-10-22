@@ -212,14 +212,21 @@ down but still working), not `desired` or `ready`.
 At the end, copy `/var/log/multisite` of each site next to each other and summarise the run:
 
 ```bash
-.venv/bin/python scripts/summarize_run.py logs-edge logs-cloud --duration 3600
+.venv/bin/python scripts/summarize_run.py logs-edge logs-cloud --duration 3600 --out results/run-1
 ```
 
 The run lasts `--duration` seconds from its first job: only what ends inside it counts, and
 the jobs still in the pipeline at the end are reported apart. It prints the jobs sent,
 completed, failed and duplicated; per 5 minutes the job duration and the wait of every
-stage; the waits of the hops between the sites; the decisions of the agents and the
-replicas that stayed not ready. It exits with an error if a job failed or was duplicated,
+stage; the waits of the hops between the sites; the service time of every stage on every
+site; the decisions of the agents and the replicas that stayed not ready.
+
+With `--out` it writes four CSV files for analysis and plots, with times in seconds from
+the start of the run: `jobs.csv` (one row per job), `stages.csv` (one row per job and
+stage: site, pod, service time, wait), `replicas.csv` (replicas of every stage on every
+site, every 5 s) and `agents.csv` (every observation window: the state, what the agent
+received, its answer, the replicas applied). Locust writes the client side of the same
+run: `request_timestamps.csv` (send time and end-to-end response time of every request). It exits with an error if a job failed or was duplicated,
 an agent did not answer, or replicas stayed not ready longer than `--max-not-ready`.
 
 ## 9. Clean up between experiments
