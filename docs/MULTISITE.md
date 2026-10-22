@@ -209,6 +209,19 @@ The timings of all the stages travel with the job, so `timing.jsonl` is written 
 the gateway's site. For resources and cost use `alive` (it includes pods that are shutting
 down but still working), not `desired` or `ready`.
 
+At the end, copy `/var/log/multisite` of each site next to each other and summarise the run:
+
+```bash
+.venv/bin/python scripts/summarize_run.py logs-edge logs-cloud --duration 3600
+```
+
+The run lasts `--duration` seconds from its first job: only what ends inside it counts, and
+the jobs still in the pipeline at the end are reported apart. It prints the jobs sent,
+completed, failed and duplicated; per 5 minutes the job duration and the wait of every
+stage; the waits of the hops between the sites; the decisions of the agents and the
+replicas that stayed not ready. It exits with an error if a job failed or was duplicated,
+an agent did not answer, or replicas stayed not ready longer than `--max-not-ready`.
+
 ## 9. Clean up between experiments
 
 The workers keep every job directory under `/mnt/ramdisk` (about 1 MB each time a job moves
