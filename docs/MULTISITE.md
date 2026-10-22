@@ -226,7 +226,16 @@ the start of the run: `jobs.csv` (one row per job), `stages.csv` (one row per jo
 stage: site, pod, service time, wait), `replicas.csv` (replicas of every stage on every
 site, every 5 s) and `agents.csv` (every observation window: the state, what the agent
 received, its answer, the replicas applied). Locust writes the client side of the same
-run: `request_timestamps.csv` (send time and end-to-end response time of every request). It exits with an error if a job failed or was duplicated,
+run: `request_timestamps.csv` (send time and end-to-end response time of every request).
+
+The plots and tables are in `analysis/run_analysis.ipynb`. Copy Locust's
+`request_timestamps.csv` and `workloadProfile.csv` into the run's directory, list the runs
+to show (up to three, compared side by side) in its first cell and run it:
+
+```bash
+python3 -m venv analysis/.venv && analysis/.venv/bin/pip install -r analysis/requirements.txt
+analysis/.venv/bin/jupyter notebook analysis/run_analysis.ipynb
+``` It exits with an error if a job failed or was duplicated,
 an agent did not answer, or replicas stayed not ready longer than `--max-not-ready`.
 
 ## 9. Clean up between experiments
