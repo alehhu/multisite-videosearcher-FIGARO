@@ -5,22 +5,29 @@
 #
 #   scripts/clean-ramdisk.sh                  # dry run: shows what would be removed
 #   scripts/clean-ramdisk.sh --delete         # actually removes
-#   scripts/clean-ramdisk.sh --dir /mnt/ramdisk --pattern 'job-*' --delete
+#   scripts/clean-ramdisk.sh --dir /mnt/ramdisk --pattern 'test-*' --delete
 #
 # Only directories directly under --dir whose name matches --pattern are touched:
-# seed/, video.mp4 and anything else are left alone. The gateway names jobs job-<uuid>;
-# jobs sent with an explicit "dir" (e.g. test-1) need their own --pattern.
+# seed/, video.mp4 and anything else are left alone. By default these are the names of
+# the jobs: job-<uuid> from the gateway, <timestamp> from Locust. Jobs sent with another
+# "dir" (e.g. test-1) need their own --pattern.
 set -euo pipefail
 
 DIR="/mnt/ramdisk"
-PATTERN="job-*"
+NAMES=(-name 'job-*' -o -name '[0-9]*')
+LABEL="job-* or [0-9]*"
 DELETE="false"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dir) DIR="${2:-}"; shift 2 ;;
-        --pattern) PATTERN="${2:-}"; shift 2 ;;
+        --pattern)
+            PATTERN="${2:-}"; shift 2
+            if [[ -z "$PATTERN" || "$PATTERN" == "*" || "$PATTERN" == "seed" || "$PATTERN" == "seed*" ]]; then
+                echo "Error: refusing pattern '$PATTERN' (it would match the seeds)" >&2; exit 1
+            fi
+            NAMES=(-name "$PATTERN"); LABEL="$PATTERN" ;;
         --delete) DELETE="true"; shift ;;
-        -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Error: unknown argument '$1'" >&2; exit 1 ;;
     esac
 done
@@ -28,18 +35,15 @@ done
 if [[ ! -d "$DIR" ]]; then
     echo "Error: $DIR is not a directory" >&2; exit 1
 fi
-if [[ -z "$PATTERN" || "$PATTERN" == "*" || "$PATTERN" == "seed" || "$PATTERN" == "seed*" ]]; then
-    echo "Error: refusing pattern '$PATTERN' (it would match the seeds)" >&2; exit 1
-fi
 
-COUNT=$(find "$DIR" -mindepth 1 -maxdepth 1 -type d -name "$PATTERN" | wc -l | tr -d ' ')
-SIZE=$(find "$DIR" -mindepth 1 -maxdepth 1 -type d -name "$PATTERN" -exec du -sk {} + 2>/dev/null | awk '{s+=$1} END {printf "%.1f", s/1024}')
-echo "$COUNT job directories matching '$PATTERN' in $DIR (${SIZE:-0.0} MB)"
+COUNT=$(find "$DIR" -mindepth 1 -maxdepth 1 -type d \( "${NAMES[@]}" \) | wc -l | tr -d ' ')
+SIZE=$(find "$DIR" -mindepth 1 -maxdepth 1 -type d \( "${NAMES[@]}" \) -exec du -sk {} + 2>/dev/null | awk '{s+=$1} END {printf "%.1f", s/1024}')
+echo "$COUNT job directories matching '$LABEL' in $DIR (${SIZE:-0.0} MB)"
 
 if [[ "$DELETE" != "true" ]]; then
-    find "$DIR" -mindepth 1 -maxdepth 1 -type d -name "$PATTERN" | sort | head -5
+    find "$DIR" -mindepth 1 -maxdepth 1 -type d \( "${NAMES[@]}" \) | sort | head -5
     echo "Dry run: nothing removed. Re-run with --delete."
     exit 0
 fi
-find "$DIR" -mindepth 1 -maxdepth 1 -type d -name "$PATTERN" -exec rm -rf {} +
+find "$DIR" -mindepth 1 -maxdepth 1 -type d \( "${NAMES[@]}" \) -exec rm -rf {} +
 echo "Removed. Left in $DIR:"; ls "$DIR"

@@ -101,3 +101,14 @@ def test_export_writes_the_csv_files(tmp_path):
     assert read("replicas.csv")[0]["t"] == "5.0"
     row = read("agents.csv")[0]
     assert (row["t"], row["pressure"], row["obs_pressure"], row["applied"]) == ("120.0", "0.5", "0.17", "3")
+
+
+@pytest.mark.parametrize("header", [True, False])
+def test_pods_are_read_with_or_without_the_header(tmp_path, header):
+    path = tmp_path / "pods.csv"
+    lines = ["1000.0,edge,ffmpeg0,1,0,2,2,2,0,0"]
+    if header:
+        lines.insert(0, ",".join(summarize_run.POD_COLUMNS))
+    path.write_text("\n".join(lines) + "\n")
+    rows = summarize_run.read_pods(str(path))
+    assert len(rows) == 1 and rows[0]["stage"] == "ffmpeg0" and rows[0]["ready"] == "2"

@@ -34,6 +34,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 from multisite import STAGES  # noqa: E402
 
+POD_COLUMNS = ["timestamp", "site", "stage", "placed_here", "draining",
+               "desired", "ready", "alive", "terminating", "hpa"]
+
 
 def read_jsonl(path):
     if not os.path.exists(path):
@@ -49,12 +52,23 @@ def read_csv(path):
         return list(csv.DictReader(f))
 
 
+def read_pods(path):
+    """pods.csv: the header is missing when the file was emptied while the controller runs."""
+    if not os.path.exists(path):
+        return []
+    with open(path, newline="") as f:
+        rows = list(csv.reader(f))
+    if rows and rows[0] == POD_COLUMNS:
+        rows = rows[1:]
+    return [dict(zip(POD_COLUMNS, row)) for row in rows]
+
+
 def load(dirs):
     logs = {"timing": [], "observations": [], "pods": []}
     for d in dirs:
         logs["timing"] += read_jsonl(os.path.join(d, "timing.jsonl"))
         logs["observations"] += read_jsonl(os.path.join(d, "observations.jsonl"))
-        logs["pods"] += read_csv(os.path.join(d, "pods.csv"))
+        logs["pods"] += read_pods(os.path.join(d, "pods.csv"))
     return logs
 
 
