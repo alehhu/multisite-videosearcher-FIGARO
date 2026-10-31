@@ -6,7 +6,9 @@ replica. After the handler runs, the worker looks up the current placement table
 (retained on `control/placement/current`) and publishes the job to the site that hosts
 the next stage. Messages only carry the job id and timestamps: files stay on the site's
 ramdisk, and a job arriving from the other site gets its input from the local seed copy.
-Job directories are never removed by the worker (scripts/clean-ramdisk.sh does it).
+A worker removes the job directory when the job leaves its site: the files on a ramdisk
+count against the memory limit of the pod that wrote them, so they must not pile up.
+What stays after a failure or a crash is removed by scripts/clean-ramdisk.sh.
 """
 
 import json
@@ -221,17 +223,20 @@ class PipelineWorker:
             placement = self.placement
         if error is not None:
             params["error"] = error
-            topic = multisite.dlq_topic(placement.gateway)
+            destination, topic = placement.gateway, multisite.dlq_topic(placement.gateway)
         else:
-            _, topic = placement.destination(self.stage)
+            destination, topic = placement.destination(self.stage)
         params.setdefault("placement_versions", {})[self.stage] = placement.version
+
+        # The job leaves this site: if it comes back, its input comes from the seed. Before
+        # publishing, or this could remove the files of a job already back here. The
+        # directory of a failed job stays, to look at it.
+        if error is None and destination != self.site:
+            shutil.rmtree(job_dir, ignore_errors=True)
 
         ts[f"{self.group}_published"] = time.time()
         info = self.client.publish(topic, json.dumps(params), qos=1)
         info.wait_for_publish(timeout=60)
-
-        # Job directories are left in place (also when the job moves to the other site or
-        # fails): scripts/clean-ramdisk.sh removes them after the experiment.
 
     def _needs_seed(self, params, job_dir):
         """True when this stage's input is not on this site.

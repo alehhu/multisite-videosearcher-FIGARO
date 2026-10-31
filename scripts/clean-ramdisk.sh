@@ -1,6 +1,7 @@
 #!/bin/bash
-# Remove the job directories left on a site's ramdisk after an experiment.
-# The workers never delete them, so run this on EACH node between experiments.
+# Remove the job directories left on a site's ramdisk after an experiment: the workers
+# delete them when a job leaves the site, so these are failed jobs, or jobs that ended
+# on this site without a final cleanup. Run this on EACH node between experiments.
 #
 #   scripts/clean-ramdisk.sh                  # dry run: shows what would be removed
 #   scripts/clean-ramdisk.sh --delete         # actually removes

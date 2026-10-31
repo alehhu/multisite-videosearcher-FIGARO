@@ -10,8 +10,8 @@ split -> all-cloud -> all-edge). The test then checks that:
   - every job completed exactly once, nothing went to the DLQ;
   - each job went to the site given by the placement version its sender was using;
   - the seed was used exactly when consecutive stages ran on different sites;
-  - job directories are kept by the workers, and scripts/clean-ramdisk.sh removes them
-    without touching the seeds;
+  - a job's directory is removed from a site when the job leaves it for good, and
+    scripts/clean-ramdisk.sh removes what is left without touching the seeds;
   - every transition completed (drained, nothing lost in flight);
   - latency probes (scripts/link_probe.py) cross the bridge and come back;
   - the stages with a scaling agent (fake_agent.py) receive the expected observation and
@@ -250,7 +250,6 @@ def check(results, sent, tables, ramdisks):
         errors.append(f"{len(results.dlq)} jobs in DLQ, e.g. {results.dlq[0].get('error', {}).get('message')}")
 
     seeds_used = 0
-    leftover_dirs = {}
     for job, p in results.done.items():
         sites, versions, ts = p["sites"], p["placement_versions"], p["timestamps"]
         sender = "gateway"
@@ -265,12 +264,16 @@ def check(results, sent, tables, ramdisks):
                 if used_seed != (sites[prev] != sites[stage]):
                     errors.append(f"{job}: seed used={used_seed} for {stage} ({sites[prev]}->{sites[stage]})")
             sender = stage
+        # Once the job is done, only the site where it ended may still have its directory.
+        for site, ramdisk in ramdisks.items():
+            if site != sites[STAGES[-1]] or site != sites["gateway"]:
+                if os.path.exists(os.path.join(ramdisk, job)):
+                    errors.append(f"{job}: its directory is still on {site}")
 
     for site, ramdisk in ramdisks.items():
-        # Workers keep the job directories; the cleanup script must remove exactly those.
+        # The cleanup script must remove the job directories and nothing else.
         script = os.path.join(ROOT, "scripts", "clean-ramdisk.sh")
         before = sorted(d for d in os.listdir(ramdisk) if d.startswith("job-"))
-        leftover_dirs[site] = len(before)
         subprocess.run([script, "--dir", ramdisk], capture_output=True, text=True)  # dry run
         if sorted(d for d in os.listdir(ramdisk) if d.startswith("job-")) != before:
             errors.append(f"{site}: the dry run of clean-ramdisk.sh removed something")
@@ -281,8 +284,6 @@ def check(results, sent, tables, ramdisks):
         seeds = sorted(os.listdir(os.path.join(ramdisk, "seed")))
         if seeds != sorted(STAGES[1:]) or not all(os.listdir(os.path.join(ramdisk, "seed", d)) for d in seeds):
             errors.append(f"{site}: clean-ramdisk.sh damaged the seeds: {seeds}")
-    if not any(leftover_dirs.values()):
-        errors.append("no job directory was kept: the workers are still cleaning up")
 
     events = []
     for site in SITES:
@@ -296,7 +297,7 @@ def check(results, sent, tables, ramdisks):
 
     print(f"\n{len(sent)} sent, {len(results.done)} completed, {results.duplicates} duplicates, "
           f"{len(results.dlq)} DLQ, {seeds_used} seed copies, {len(drained)} stages drained, "
-          f"job dirs kept then cleaned: {leftover_dirs}")
+          "job dirs removed when leaving a site")
     return errors
 
 
