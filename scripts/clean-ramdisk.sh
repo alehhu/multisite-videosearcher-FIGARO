@@ -4,7 +4,7 @@
 # on this site without a final cleanup. Run this on EACH node between experiments.
 #
 #   scripts/clean-ramdisk.sh                  # dry run: shows what would be removed
-#   scripts/clean-ramdisk.sh --delete         # actually removes
+#   scripts/clean-ramdisk.sh --delete         # actually removes (asks for sudo)
 #   scripts/clean-ramdisk.sh --dir /mnt/ramdisk --pattern 'test-*' --delete
 #
 # Only directories directly under --dir whose name matches --pattern are touched:
@@ -45,5 +45,12 @@ if [[ "$DELETE" != "true" ]]; then
     echo "Dry run: nothing removed. Re-run with --delete."
     exit 0
 fi
-find "$DIR" -mindepth 1 -maxdepth 1 -type d \( "${NAMES[@]}" \) -exec rm -rf {} +
+# The pods write the job directories as root: removing those needs sudo.
+RM=(rm -rf)
+NOT_MINE=$(find "$DIR" -mindepth 1 -maxdepth 2 \( -path "$DIR/seed" -prune -o ! -user "$(id -u)" -print \) | grep -cv "^$DIR/seed" || true)
+if [[ $EUID -ne 0 && "$NOT_MINE" -gt 0 ]]; then
+    echo "Some job directories belong to another user (the pods write them as root): removing them with sudo."
+    RM=(sudo rm -rf)
+fi
+find "$DIR" -mindepth 1 -maxdepth 1 -type d \( "${NAMES[@]}" \) -exec "${RM[@]}" {} +
 echo "Removed. Left in $DIR:"; ls "$DIR"

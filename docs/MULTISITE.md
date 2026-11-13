@@ -217,7 +217,7 @@ results/<run>/
 3. **Clean up the previous run**, on each server, once its logs are saved (see "After the
    run"):
    ```bash
-   scripts/clean-ramdisk.sh --delete          # job directories; seed/ and video.mp4 stay
+   scripts/clean-ramdisk.sh --delete          # job directories (asks for sudo); seed/ and video.mp4 stay
    sudo truncate -s 0 /var/log/multisite/*    # empty the logs
    ```
    Empty the log files with `truncate`, do not delete or move them: the controller keeps
