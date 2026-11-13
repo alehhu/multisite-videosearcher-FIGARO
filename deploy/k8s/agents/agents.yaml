@@ -2,6 +2,9 @@
 # All six use the same image (scripts/build-agent-image.sh) and differ only in the trained
 # checkpoint they load. The controller of this site calls http://agent-<stage>:5000/action.
 # No memory limit yet: the footprint of an agent (Ray + PyTorch) has to be measured first.
+# The RAY_* variables only limit Ray's own log files, which otherwise grow by about 0.4 GB
+# a day per agent (rotated only at 512 MB, five copies each) until the node runs out of
+# disk and k3s evicts the pods. They do not change what the agents decide.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,6 +30,12 @@ spec:
         env:
         - name: CHECKPOINT_PATH
           value: trained_checkpoint_cl1
+        - name: RAY_BACKEND_LOG_LEVEL
+          value: warning
+        - name: RAY_ROTATION_MAX_BYTES
+          value: "10485760"
+        - name: RAY_ROTATION_BACKUP_COUNT
+          value: "1"
         ports:
         - containerPort: 5000
           name: http
@@ -76,6 +85,12 @@ spec:
         env:
         - name: CHECKPOINT_PATH
           value: trained_checkpoint_cl2
+        - name: RAY_BACKEND_LOG_LEVEL
+          value: warning
+        - name: RAY_ROTATION_MAX_BYTES
+          value: "10485760"
+        - name: RAY_ROTATION_BACKUP_COUNT
+          value: "1"
         ports:
         - containerPort: 5000
           name: http
@@ -125,6 +140,12 @@ spec:
         env:
         - name: CHECKPOINT_PATH
           value: trained_checkpoint_cl3
+        - name: RAY_BACKEND_LOG_LEVEL
+          value: warning
+        - name: RAY_ROTATION_MAX_BYTES
+          value: "10485760"
+        - name: RAY_ROTATION_BACKUP_COUNT
+          value: "1"
         ports:
         - containerPort: 5000
           name: http
@@ -174,6 +195,12 @@ spec:
         env:
         - name: CHECKPOINT_PATH
           value: trained_checkpoint_cl4
+        - name: RAY_BACKEND_LOG_LEVEL
+          value: warning
+        - name: RAY_ROTATION_MAX_BYTES
+          value: "10485760"
+        - name: RAY_ROTATION_BACKUP_COUNT
+          value: "1"
         ports:
         - containerPort: 5000
           name: http
@@ -223,6 +250,12 @@ spec:
         env:
         - name: CHECKPOINT_PATH
           value: trained_checkpoint_cl5
+        - name: RAY_BACKEND_LOG_LEVEL
+          value: warning
+        - name: RAY_ROTATION_MAX_BYTES
+          value: "10485760"
+        - name: RAY_ROTATION_BACKUP_COUNT
+          value: "1"
         ports:
         - containerPort: 5000
           name: http
@@ -272,6 +305,12 @@ spec:
         env:
         - name: CHECKPOINT_PATH
           value: trained_checkpoint_cl6
+        - name: RAY_BACKEND_LOG_LEVEL
+          value: warning
+        - name: RAY_ROTATION_MAX_BYTES
+          value: "10485760"
+        - name: RAY_ROTATION_BACKUP_COUNT
+          value: "1"
         ports:
         - containerPort: 5000
           name: http
