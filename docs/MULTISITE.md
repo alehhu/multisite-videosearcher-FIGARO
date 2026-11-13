@@ -223,7 +223,14 @@ results/<run>/
    Empty the log files with `truncate`, do not delete or move them: the controller keeps
    `pods.csv` open. `summarize_run.py` takes the first job in the logs as the start of the
    run, so logs left over from an earlier run would mix the two.
-4. **Placement**, from the cloud VM:
+4. **Restart the agents**, on each server, so that every run starts from freshly started
+   agents (same checkpoint, empty memory and logs):
+   ```bash
+   kubectl -n multisite rollout restart deployment -l tier=agent
+   kubectl -n multisite get pods -l tier=agent      # all 1/1 before starting the run
+   ```
+   The agents do not learn during a run, so this does not change their decisions.
+5. **Placement**, from the cloud VM:
    ```bash
    .venv/bin/python scripts/placement.py publish placements/split-ffmpeg2.yaml --broker localhost:31883
    .venv/bin/python scripts/placement.py show --broker localhost:31883
@@ -299,7 +306,8 @@ curl -X POST http://localhost:38080/workflow/invoke/videosearcher_workflow \
    to compare them) and run all the cells. Each section says what its plot shows and how
    to read it; the figures are also saved as PNG under `results/<run>/plots/`. Section 5 is
    the profiling: the service time of every stage and the thresholds it implies.
-5. **Before the next run**, clean up as in "Before the run", step 3.
+5. **Before the next run**, clean up and restart the agents as in "Before the run",
+   steps 3 and 4.
 
 ### The logs
 
