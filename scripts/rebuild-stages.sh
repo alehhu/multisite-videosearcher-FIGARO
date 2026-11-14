@@ -6,14 +6,14 @@
 #   scripts/rebuild-stages.sh --all              # all six stages
 #   scripts/rebuild-stages.sh grep timing-collector
 #
-# Names: the six stages, gateway, timing-collector, local-controller. Only the deployments
-# scaled above 0 here are restarted; the others get the new image when they next start.
-# At the end it checks that every restarted stage runs the worker of this checkout.
-# It uses sudo to import the images into k3s.
+# Names: the six stages, gateway, timing-collector, local-controller, dispatcher. Only
+# the deployments scaled above 0 here are restarted; the others get the new image when
+# they next start. At the end it checks that every restarted stage runs the worker of
+# this checkout. It uses sudo to import the images into k3s.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
 
 NAMES=()
 ALL="false"
@@ -41,6 +41,7 @@ build() {
         gateway) docker build -t gateway:latest -f gateway/Dockerfile . ;;
         timing-collector) docker build -t timing-collector:latest -f monitoring/timing_collector/Dockerfile monitoring/timing_collector/ ;;
         local-controller) docker build -t local-controller:latest -f controller/Dockerfile . ;;
+        dispatcher) docker build -t dispatcher:latest -f dispatcher/Dockerfile . ;;
         *)
             [[ -f "functions/$1/Dockerfile" ]] || die "unknown image '$1'"
             docker build -t "$1:latest" -f "functions/$1/Dockerfile" . ;;
@@ -82,7 +83,7 @@ FAILED=0
 EXPECTED=$(md5sum common/pipeline_worker.py | cut -d' ' -f1)
 CHECKED=()
 for name in "${RESTARTED[@]}"; do
-    case "$name" in gateway|timing-collector|local-controller) ;; *) CHECKED+=("$name") ;; esac
+    case "$name" in gateway|timing-collector|local-controller|dispatcher) ;; *) CHECKED+=("$name") ;; esac
 done
 [[ ${#CHECKED[@]} -eq 0 ]] || step "Checking the worker in the pods"
 for name in "${CHECKED[@]}"; do

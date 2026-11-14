@@ -9,6 +9,8 @@ client ──► EDGE (Modena) ◄──MQTT bridge──► CLOUD (Milano)
 ```
 
 - Each site has its own k3s cluster and Mosquitto broker; the two brokers are bridged.
+- On each site a dispatcher keeps one queue per stage and hands each job to a free
+  replica, as Serverledge does: a replica started while jobs are waiting serves them.
 - The placement (which site runs each stage) is a retained MQTT message. A controller on
   each site starts the stages assigned to it and drains the ones that moved away.
 - Files are not transferred between sites: a job arriving from the other site reads its
@@ -19,7 +21,7 @@ client ──► EDGE (Modena) ◄──MQTT bridge──► CLOUD (Milano)
 - Each site logs per-job timings, pod counts, placement changes, and the observations
   and decisions of the scaling agents.
 
-Tested locally with `tests/integration`; not yet run on the two servers.
+Tested locally with `tests/integration`, and run on the two servers.
 
 ## Layout
 
@@ -28,6 +30,7 @@ common/            stage order, topics, placement table and the MQTT worker
 functions/         the 6 pipeline stages
 gateway/           HTTP -> MQTT entry point (edge)
 controller/        per-site controller
+dispatcher/        per-site job queues, one per stage
 monitoring/        timing collector
 deploy/            Kubernetes manifests (base, scaling agents, site overlays), broker bridge configs
 placements/        example placement tables

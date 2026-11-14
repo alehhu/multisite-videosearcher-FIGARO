@@ -37,7 +37,7 @@ if [[ -z "${KUBECONFIG:-}" && -f "$HOME/.kube/config" ]]; then
     export KUBECONFIG="$HOME/.kube/config"
 fi
 NS=multisite
-IMAGES=(ffmpeg0 librosa ffmpeg1 ffmpeg2 deepspeech grep gateway timing-collector local-controller)
+IMAGES=(ffmpeg0 librosa ffmpeg1 ffmpeg2 deepspeech grep gateway timing-collector local-controller dispatcher)
 
 if [[ ! -f "$ROOT/site.env" ]]; then
     echo "Error: site.env not found. Restore it with: git checkout site.env" >&2; exit 1
@@ -159,6 +159,7 @@ if [[ "$ALREADY_DEPLOYED" == "true" && "$SKIP_BUILD" != "true" ]]; then
     kubectl -n "$NS" rollout status deployment/mosquitto-deployment --timeout=120s
     kubectl -n "$NS" rollout status deployment/local-controller --timeout=120s
 fi
+kubectl -n "$NS" rollout status deployment/dispatcher --timeout=120s
 if [[ "$SITE" == "edge" ]]; then
     kubectl -n "$NS" rollout status deployment/gateway-deployment --timeout=120s
     kubectl -n "$NS" rollout status deployment/timing-collector --timeout=120s

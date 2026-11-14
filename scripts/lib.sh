@@ -44,7 +44,7 @@ running_stages() {
 deployment_of() {
     case "$1" in
         gateway) echo gateway-deployment ;;
-        timing-collector|local-controller) echo "$1" ;;
+        timing-collector|local-controller|dispatcher) echo "$1" ;;
         *) echo "$1-deployment" ;;
     esac
 }

@@ -3,7 +3,8 @@
 ```
 client --HTTP :30080--> EDGE                        <==MQTT bridge :31883==>  CLOUD
                         gateway, collector                                    placement coordinator
-                        broker, controller, stages                            broker, controller, stages
+                        broker, dispatcher,                                   broker, dispatcher,
+                        controller, stages                                    controller, stages
                         scaling agents                                        scaling agents
 ```
 
@@ -47,8 +48,8 @@ each setting. Edit it on each server and keep the edited copy local (do not comm
 | `BRIDGE_TO` | `host:port` of the other site's broker, on exactly one site: the one that can reach the other. Empty on the other site, and for a single site |
 | `AGENTS` | `false` (default): fixed replicas. `true`: the stages are scaled by the DQN agents |
 
-The script builds the images (the six stages, gateway, timing collector, controller and,
-with `AGENTS=true`, the agents), imports them into k3s, creates `.venv` for the scripts,
+The script builds the images (the six stages, gateway, timing collector, controller,
+dispatcher and, with `AGENTS=true`, the agents), imports them into k3s, creates `.venv` for the scripts,
 prepares `/mnt/ramdisk` (input video, seeds) and `/var/log/multisite`, deploys the site
 and waits for it to be ready. With agents, it ends by asking each of them for one action.
 It uses sudo only to import the images into k3s and to create those two directories.
@@ -224,11 +225,28 @@ On each server, rebuild what changed and restart it (replicas, agents and placem
 ```bash
 scripts/rebuild-stages.sh                      # the stages that run on this site
 scripts/rebuild-stages.sh --all                # all six (keep them current for a placement change)
-scripts/rebuild-stages.sh timing-collector     # or any of gateway, timing-collector, local-controller
+scripts/rebuild-stages.sh timing-collector     # or any of gateway, timing-collector, local-controller, dispatcher
 ```
 
 It checks at the end that the restarted stages run the worker of the checkout. For a
 change to the manifests or `site.env`, use `scripts/setup-site.sh` instead.
+
+**Switching to the dispatcher** (once, on each server, with no job in the pipeline). The
+workers no longer use a shared subscription: they get their jobs from the dispatcher of
+the site. Old and new workers must not take jobs together: the old ones would get from
+the broker the same jobs as the dispatcher. In this order:
+
+```bash
+scripts/rebuild-stages.sh dispatcher            # the image (nothing to restart yet)
+scripts/setup-site.sh --skip-build              # creates the dispatcher (manifests changed)
+kubectl -n multisite logs deploy/dispatcher     # "connected to the broker of <site>"
+scripts/rebuild-stages.sh                       # the new workers, of the stages that run here
+scripts/rebuild-stages.sh timing-collector      # on the edge: records the queue times
+```
+
+A stage image not rebuilt keeps the old worker, which would take the same jobs as the
+dispatcher (each would run twice): rebuild it before a placement moves that stage here
+(`--all` where the disk allows it).
 
 ### Before every run
 
@@ -324,7 +342,7 @@ Under `/var/log/multisite/` on each server:
 
 | File | Site | Content |
 |---|---|---|
-| `timing.jsonl` | edge | one record per finished job: per-stage start/end, site, pod, placement version, `wait`, errors |
+| `timing.jsonl` | edge | one record per finished job: per-stage start/end, site, pod, placement version, `wait` (of which `queue` in the dispatcher), errors, `requeued` |
 | `pods.csv` | both | every 5 s, per stage: desired, ready, alive, terminating, hpa, placed_here, draining |
 | `transitions.jsonl` | both | each step of each placement change |
 | `observations.jsonl` | both | every 120 s: state per stage and per site, with each agent's answer and the replicas applied |
@@ -341,8 +359,10 @@ colima start   # or any Docker daemon
 .venv/bin/python -m pytest tests/unit monitoring/timing_collector
 .venv/bin/python tests/integration/run_integration.py --bridge-from edge
 .venv/bin/python tests/integration/run_integration.py --bridge-from cloud
+.venv/bin/python tests/integration/run_dispatch_test.py
 ```
 
-Two real brokers with the real bridge config, the real gateway, collector and controllers,
-fake stage workers and fake agents. See the docstring of `run_integration.py` for what it
-checks.
+Two real brokers with the real bridge config, the real gateway, collector, dispatchers
+and controllers, fake stage workers and fake agents. `run_dispatch_test.py` puts one
+dispatcher under a backlog: replicas started late, a replica stopped or killed, the
+dispatcher killed. See the docstring of each for what it checks.

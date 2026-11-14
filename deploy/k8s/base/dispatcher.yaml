@@ -1,0 +1,36 @@
+# One per site: every job entering a stage here waits in it and goes to the first free
+# replica (dispatcher/dispatcher.py). Its own pod, so that it can be restarted without
+# the broker: the jobs it holds stay in the broker meanwhile (persistent session).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dispatcher
+  labels:
+    app: dispatcher
+spec:
+  replicas: 1
+  # Never two at once: they would share the MQTT client id and take turns disconnecting.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dispatcher
+  template:
+    metadata:
+      labels:
+        app: dispatcher
+    spec:
+      containers:
+      - name: dispatcher
+        image: dispatcher:latest
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: site-config
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"

@@ -18,4 +18,7 @@ docker build -t timing-collector:latest -f monitoring/timing_collector/Dockerfil
 echo "Building local-controller:latest"
 docker build -t local-controller:latest -f controller/Dockerfile .
 
+echo "Building dispatcher:latest"
+docker build -t dispatcher:latest -f dispatcher/Dockerfile .
+
 echo "All images built."
