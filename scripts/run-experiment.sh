@@ -41,7 +41,9 @@ fi
 
 mkdir -p "$OUT"
 commit=$(git rev-parse --short HEAD)
-[[ -z "$(git status --porcelain --untracked-files=no)" ]] || commit="$commit (with local changes)"
+# site.env is edited on every server by design: only other changes make the code differ.
+changed=$(git status --porcelain --untracked-files=no | awk '$2 != "site.env" {print $2}' | tr '\n' ' ')
+[[ -z "$changed" ]] || commit="$commit (with local changes: $changed)"
 cat > "$OUT/run.yaml" <<EOF
 name: $RUN
 started: $(date -Iseconds)
