@@ -288,9 +288,11 @@ curl -X POST http://localhost:38080/workflow/invoke/videosearcher_workflow \
    ready; the files each stage wrote (count and size, from the job's record). It ends with
    five checks (no failed job, no duplicate, every agent answered, replicas ready in time,
    every stage wrote its output) and exits with an error if one fails: then the run is to
-   be looked at before being used. A stage "did not write its output" when it wrote no file,
-   or less than half the median size of that stage: the inputs are the same video every
-   time, so the outputs should have the same size.
+   be looked at before being used. Every job processes the same video, so a stage should
+   write the same files every time: an output is odd when it has another number of files
+   than usual for that stage on that site, or a size more than 10% away from the median
+   (`--output-tolerance`). The table shows the largest deviation of every stage: use it to
+   choose a tighter tolerance once the spread of the real runs is known.
 
    With `--out` it writes the CSV files used by the notebook, times in seconds from the start
    of the run: `jobs.csv` (one row per job), `stages.csv` (one row per job and stage: site,

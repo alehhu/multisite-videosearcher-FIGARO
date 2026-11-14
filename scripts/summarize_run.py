@@ -182,25 +182,36 @@ def service_times(completed):
 
 
 def stage_outputs(completed):
-    """{stage: [(job_id, files, bytes)]} of the completed jobs whose record lists the outputs."""
+    """{(stage, site): [(job_id, files, bytes)]} of the completed jobs whose record lists the outputs."""
     outputs = {}
     for record in completed:
+        sites = record.get("sites", {})
         for stage, files in (record.get("outputs") or {}).items():
-            outputs.setdefault(stage, []).append((record["job_id"], len(files), sum(files.values())))
+            key = (stage, sites.get(stage, "?"))
+            outputs.setdefault(key, []).append((record["job_id"], len(files), sum(files.values())))
     return outputs
 
 
-def odd_outputs(outputs, ratio=0.5):
-    """Stages that wrote nothing, or less than `ratio` times their median size: [(stage, job_id, files, bytes)].
+def output_reference(items):
+    """The expected output of a stage on a site: (most common number of files, median bytes)."""
+    counts = statistics.multimode(n for _, n, _ in items)
+    return min(counts), statistics.median(b for _, _, b in items)
 
+
+def odd_outputs(outputs, tolerance=0.10):
+    """Outputs that differ from their stage on their site: [(stage, site, job_id, files, bytes)].
+
+    Every job processes the same video, so a stage should write the same files every time:
+    odd is another number of files, or a size more than `tolerance` away from the median.
     The last stage is left out: grep removes the job directory and its output is the result.
     """
     odd = []
-    for stage, items in outputs.items():
+    for (stage, site), items in outputs.items():
         if stage == STAGES[-1]:
             continue
-        median_bytes = statistics.median(b for _, _, b in items)
-        odd += [(stage, job_id, n, b) for job_id, n, b in items if n == 0 or b < ratio * median_bytes]
+        files, size = output_reference(items)
+        odd += [(stage, site, job_id, n, b) for job_id, n, b in items
+                if n != files or abs(b - size) > tolerance * size]
     return sorted(odd)
 
 
@@ -287,6 +298,8 @@ def main():
     parser.add_argument("--bucket", type=float, default=300, help="seconds per row of the table (default: %(default)s)")
     parser.add_argument("--max-not-ready", type=float, default=120,
                         help="longest time a stage may have replicas not ready (default: %(default)s s)")
+    parser.add_argument("--output-tolerance", type=float, default=0.10,
+                        help="largest relative difference of an output from its median (default: %(default)s)")
     parser.add_argument("--out", help="directory where to write the CSV files")
     args = parser.parse_args()
 
@@ -330,19 +343,22 @@ def main():
                       f"{percentile(values, 0.05):>8.3f} {percentile(values, 0.5):>8.3f} {percentile(values, 0.95):>8.3f}")
 
     outputs = stage_outputs(completed)
-    odd = odd_outputs(outputs) if outputs else []
-    print("\nOutput of each stage (files it wrote in the job directory, completed jobs):")
+    odd = odd_outputs(outputs, args.output_tolerance) if outputs else []
+    print(f"\nOutput of each stage (files it wrote in the job directory, completed jobs; "
+          f"odd if another number of files or more than {args.output_tolerance:.0%} from the median):")
     if not outputs:
         print("  not recorded in these logs")
+    else:
+        print(f"  {'stage':<11} {'site':<6} {'n':>5} {'files':>5} {'median MB':>10} {'max dev':>8}")
     for stage in STAGES:
-        if stage in outputs:
-            items = outputs[stage]
-            files = [n for _, n, _ in items]
-            sizes = [b / 1e6 for _, _, b in items]
-            print(f"  {stage:<11} n={len(items):<5} files {min(files)}-{max(files)}  "
-                  f"MB median={statistics.median(sizes):.3f} min={min(sizes):.3f} max={max(sizes):.3f}")
-    for stage, job_id, n, b in odd:
-        print(f"  odd: {stage} of {job_id} wrote {n} files, {b} bytes")
+        for (name, site), items in sorted(outputs.items()):
+            if name != stage:
+                continue
+            files, size = output_reference(items)
+            deviation = max(abs(b - size) for _, _, b in items) / size if size else 0.0
+            print(f"  {stage:<11} {site:<6} {len(items):>5} {files:>5} {size / 1e6:>10.3f} {deviation:>8.2%}")
+    for stage, site, job_id, n, b in odd:
+        print(f"  odd: {stage}@{site} of {job_id} wrote {n} files, {b} bytes")
 
     decisions = agent_decisions(logs["observations"], start, end)
     errors = 0

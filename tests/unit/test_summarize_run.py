@@ -115,20 +115,30 @@ def test_pods_are_read_with_or_without_the_header(tmp_path, header):
     assert len(rows) == 1 and rows[0]["stage"] == "ffmpeg0" and rows[0]["ready"] == "2"
 
 
-def outputs_of(size_ffmpeg2=300):
+def outputs_of(size_ffmpeg2=300, clips=3):
     files = {stage: {f"{stage}.tar.gz": 100} for stage in STAGES[:-1]}
-    files["ffmpeg2"] = {f"out_{i}.tar.gz": size_ffmpeg2 // 3 for i in range(3)}
+    files["ffmpeg2"] = {f"out_{i}.tar.gz": size_ffmpeg2 // clips for i in range(clips)}
     files[STAGES[-1]] = {}
     return files
 
 
-def test_outputs_per_stage_and_odd_ones():
-    jobs = [job(f"j{i}", 1000 + i, 1100, outputs=outputs_of()) for i in range(4)]
-    jobs.append(job("small", 1010, 1100, outputs=outputs_of(size_ffmpeg2=60)))
-    jobs.append(job("empty", 1011, 1100, outputs={**outputs_of(), "librosa": {}}))
-    outputs = summarize_run.stage_outputs(jobs)
-    assert outputs["ffmpeg2"][0] == ("j0", 3, 300)
-    odd = summarize_run.odd_outputs(outputs)
-    assert ("ffmpeg2", "small", 3, 60) in odd and ("librosa", "empty", 0, 0) in odd
+def test_outputs_are_grouped_by_stage_and_site():
+    cloud = {s: ("cloud" if s in ("deepspeech", "grep") else "edge") for s in STAGES}
+    outputs = summarize_run.stage_outputs([job("a", 1000, 1100, outputs=outputs_of()),
+                                           job("b", 1001, 1100, sites=cloud, outputs=outputs_of())])
+    assert outputs[("ffmpeg2", "edge")] == [("a", 3, 300), ("b", 3, 300)]
+    assert set(outputs) >= {("deepspeech", "edge"), ("deepspeech", "cloud")}
+
+
+def test_odd_outputs_in_both_directions_and_by_number_of_files():
+    jobs = [job(f"j{i}", 1000 + i, 1100, outputs=outputs_of()) for i in range(6)]
+    jobs += [job("close", 1010, 1100, outputs=outputs_of(size_ffmpeg2=315)),     # +5%: fine
+             job("small", 1011, 1100, outputs=outputs_of(size_ffmpeg2=240)),     # -20%
+             job("large", 1012, 1100, outputs=outputs_of(size_ffmpeg2=360)),     # +20%
+             job("clips", 1013, 1100, outputs=outputs_of(clips=2, size_ffmpeg2=300)),  # 2 files, same bytes
+             job("empty", 1014, 1100, outputs={**outputs_of(), "librosa": {}})]
+    odd = summarize_run.odd_outputs(summarize_run.stage_outputs(jobs))
+    assert sorted(job_id for _, _, job_id, _, _ in odd) == ["clips", "empty", "large", "small"]
     assert all(stage != STAGES[-1] for stage, *_ in odd)   # grep writes nothing by design
-    assert len(odd) == 2
+    strict = summarize_run.odd_outputs(summarize_run.stage_outputs(jobs), tolerance=0.04)
+    assert "close" in [job_id for _, _, job_id, _, _ in strict]
