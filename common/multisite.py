@@ -40,6 +40,8 @@ OBSERVATIONS_TOPIC_PREFIX = "observations"
 # probe/<site>/ping: latency probes answered by the local controller of <site>, which
 # replies on the topic given in the probe (scripts/link_probe.py).
 PROBE_TOPIC_PREFIX = "probe"
+# work/<site>/...: between the dispatcher of a site and its workers, never bridged.
+WORK_TOPIC_PREFIX = "work"
 
 
 def stage_topic(site, stage):
@@ -69,6 +71,21 @@ def probe_pong_topic(site):
 
 def observations_topic(site):
     return f"{OBSERVATIONS_TOPIC_PREFIX}/{site}"
+
+
+def work_topic(site, stage, worker):
+    """Topic where the dispatcher of `site` hands a job of `stage` to one worker."""
+    return f"{WORK_TOPIC_PREFIX}/{site}/{stage}/to/{worker}"
+
+
+def worker_state_topic(site, stage):
+    """Topic where the workers of `stage` on `site` tell the dispatcher they are idle or leave."""
+    return f"{WORK_TOPIC_PREFIX}/{site}/{stage}/state"
+
+
+def dispatcher_hello_topic(site):
+    """Published by the dispatcher when it connects: idle workers announce themselves again."""
+    return f"{WORK_TOPIC_PREFIX}/{site}/hello"
 
 
 def next_stage(stage):
@@ -170,21 +187,30 @@ def make_client(client_id="", manual_ack=False):
     return client
 
 
-def connect(client, host=None, port=None, receive_maximum=None, retry_seconds=5):
+def connect(client, host=None, port=None, receive_maximum=None, session_expiry=None,
+            retry_seconds=5):
     """Connect, retrying until the broker is reachable.
 
-    receive_maximum=1 makes the broker hand the client one unacknowledged message at a
-    time, so queued jobs wait in the broker instead of piling up inside a busy worker.
+    receive_maximum: how many unacknowledged messages the broker may send to this client
+    at a time. session_expiry (seconds): keep the session, its subscriptions and the
+    messages for it in the broker across disconnections; the client then never starts
+    clean.
     """
     host = host or os.getenv("MQTT_BROKER", "mosquitto-service")
     port = int(port or os.getenv("MQTT_PORT", "1883"))
     properties = None
-    if receive_maximum is not None:
+    if receive_maximum is not None or session_expiry is not None:
         properties = Properties(PacketTypes.CONNECT)
-        properties.ReceiveMaximum = receive_maximum
+        if receive_maximum is not None:
+            properties.ReceiveMaximum = receive_maximum
+        if session_expiry is not None:
+            properties.SessionExpiryInterval = session_expiry
+    kwargs = {}
+    if session_expiry is not None:
+        kwargs["clean_start"] = False
     while True:
         try:
-            client.connect(host, port, properties=properties)
+            client.connect(host, port, properties=properties, **kwargs)
             return
         except OSError as exc:
             print(f"[multisite] MQTT {host}:{port} unreachable ({exc}), retrying in {retry_seconds}s", flush=True)

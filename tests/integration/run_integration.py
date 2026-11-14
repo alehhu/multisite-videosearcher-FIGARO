@@ -2,12 +2,13 @@
 """End-to-end test of the multi-site mechanics on one machine.
 
 Two real Mosquitto brokers (edge, cloud) in Docker, linked by the bridge config from
-deploy/mosquitto; the real gateway, timing collector and local controllers; workers are
-local processes running fake_stage.py (same file chain as the real functions).
+deploy/mosquitto; the real gateway, timing collector, dispatchers and local controllers;
+workers are local processes running fake_stage.py (same file chain as the real functions).
 
 While jobs keep arriving, the placement changes several times (all-edge -> alternating ->
 split -> all-cloud -> all-edge). The test then checks that:
   - every job completed exactly once, nothing went to the DLQ;
+  - every stage of every job went through the dispatcher of its site;
   - each job went to the site given by the placement version its sender was using;
   - the seed was used exactly when consecutive stages ran on different sites;
   - a job's directory is removed from a site when the job leaves it for good, and
@@ -250,6 +251,7 @@ def check(results, sent, tables, ramdisks):
         errors.append(f"{len(results.dlq)} jobs in DLQ, e.g. {results.dlq[0].get('error', {}).get('message')}")
 
     seeds_used = 0
+    requeued = sum(sum(p.get("requeued", {}).values()) for p in results.done.values())
     for job, p in results.done.items():
         sites, versions, ts = p["sites"], p["placement_versions"], p["timestamps"]
         sender = "gateway"
@@ -264,6 +266,9 @@ def check(results, sent, tables, ramdisks):
                 if used_seed != (sites[prev] != sites[stage]):
                     errors.append(f"{job}: seed used={used_seed} for {stage} ({sites[prev]}->{sites[stage]})")
             sender = stage
+        for stage in STAGES:
+            if f"{GROUPS[stage]}_queued" not in ts or f"{GROUPS[stage]}_dispatched" not in ts:
+                errors.append(f"{job}: {stage} did not go through the dispatcher")
         # Each fake stage writes <stage>.out; grep removes the directory and writes nothing.
         outputs = p.get("outputs", {})
         for stage in STAGES:
@@ -303,6 +308,7 @@ def check(results, sent, tables, ramdisks):
 
     print(f"\n{len(sent)} sent, {len(results.done)} completed, {results.duplicates} duplicates, "
           f"{len(results.dlq)} DLQ, {seeds_used} seed copies, {len(drained)} stages drained, "
+          f"{requeued} jobs requeued by the dispatchers, "
           "job dirs removed when leaving a site")
     return errors
 
@@ -330,6 +336,10 @@ def main():
     for stage in AGENT_STAGES:
         CONTROLLER_CONFIG["stages"][stage]["agent"] = {"url": agents.url(stage), "min": 1, "max": 3}
     try:
+        for site in SITES:
+            procs.append(start_process(f"dispatcher-{site}", [os.path.join(ROOT, "dispatcher", "dispatcher.py")],
+                                       {"SITE": site, "MQTT_BROKER": "localhost", "MQTT_PORT": str(PORTS[site]),
+                                        "REPORT_S": "5", "PYTHONPATH": os.path.join(ROOT, "common")}))
         for site in SITES:
             backends[site] = ProcessBackend(site, PORTS[site], ramdisks[site], RUN_DIR,
                                             {s: args.service_s for s in STAGES})

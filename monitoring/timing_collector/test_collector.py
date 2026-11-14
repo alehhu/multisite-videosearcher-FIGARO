@@ -196,3 +196,16 @@ def test_stage_records_carry_site_pod_and_wait():
     assert librosa["site"] == "cloud"
     assert librosa["wait"] == pytest.approx(0.5)  # ffmpeg0 publish -> librosa start
     assert librosa["seed_copy"] == pytest.approx(0.1)
+
+
+def test_stage_records_carry_the_dispatcher_queue():
+    timestamps = {
+        "gateway_published": 10.0,
+        "groupA_queued": 10.01, "groupA_dispatched": 12.01,
+        "groupA_start": 12.1, "groupA_end": 13.0, "groupA_published": 13.1,
+        "groupB_start": 13.2, "groupB_end": 14.0,
+    }
+    ffmpeg0, librosa = collector.compute_stage_records(timestamps)
+    assert ffmpeg0["queue"] == pytest.approx(2.0)
+    assert ffmpeg0["wait"] == pytest.approx(2.1)  # the queue is part of the wait
+    assert "queue" not in librosa                 # no dispatcher timestamps

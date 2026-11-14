@@ -8,6 +8,7 @@ venv/
 logs/
 results/
 tests/integration/.run/
+tests/integration/.run-dispatch/
 # local settings
 scripts/tunnel.env
 scripts/fetch.env

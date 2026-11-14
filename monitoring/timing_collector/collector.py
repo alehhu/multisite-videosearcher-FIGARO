@@ -73,6 +73,11 @@ def compute_stage_records(timestamps, sites=None, pods=None, placement_versions=
             record["seed_copy"] = seed_end - seed_start
         if previous_published is not None:
             record["wait"] = float(start) - previous_published
+        # Time in the dispatcher's queue: part of the wait.
+        queued = _as_float(timestamps.get(f"{group}_queued"))
+        dispatched = _as_float(timestamps.get(f"{group}_dispatched"))
+        if queued is not None and dispatched is not None:
+            record["queue"] = dispatched - queued
         records.append(record)
         previous_published = _as_float(timestamps.get(f"{group}_published"))
     return records
@@ -123,6 +128,7 @@ def on_message(client, userdata, msg, props=None):
         "placement_versions": payload.get("placement_versions", {}),
         "error": payload.get("error"),
         "outputs": payload.get("outputs", {}),
+        "requeued": payload.get("requeued", {}),
         "stages": stage_records,
         "durations": durations,
     }

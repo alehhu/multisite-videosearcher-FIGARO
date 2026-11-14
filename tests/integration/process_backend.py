@@ -46,7 +46,7 @@ class ProcessBackend:
         ready_file = os.path.join(self.run_dir, f"ready-{name}")
         env = dict(os.environ, STAGE=stage, SITE=self.site, MQTT_BROKER="localhost",
                    MQTT_PORT=str(self.broker_port), POD_NAME=name, RAMDISK=self.ramdisk,
-                   READY_FILE=ready_file, DRAIN_QUIET_SECONDS="1",
+                   READY_FILE=ready_file,
                    FAKE_SERVICE_S=str(self.service_s.get(stage, 0.2)), PYTHONUNBUFFERED="1")
         log = open(os.path.join(self.run_dir, f"worker-{name}.log"), "w")
         proc = subprocess.Popen([sys.executable, FAKE_STAGE], env=env, stdout=log, stderr=subprocess.STDOUT)
