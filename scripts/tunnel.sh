@@ -36,11 +36,12 @@ GATEWAY_REMOTE_PORT="${GATEWAY_REMOTE_PORT:-38080}"
 echo "edge bind ${EDGE_BIND}:${BROKER_LOCAL_PORT} -> ${VM_ADDR}:31883 (cloud broker)"
 echo "VM 127.0.0.1:${GATEWAY_REMOTE_PORT} -> ${EDGE_ADDR}:30080 (edge gateway)"
 
-# ServerAlive*: detect a dead path within ~30 s and exit instead of hanging.
+# ServerAlive*: exit when the path has been dead for ~2 minutes, instead of hanging; shorter
+# outages are ridden out (TCP keeps the connection, the bridge does not even notice).
 # ExitOnForwardFailure: fail loudly if a port is already taken.
 exec ssh -N \
     -J "$JUMPS" \
-    -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+    -o ServerAliveInterval=10 -o ServerAliveCountMax=12 \
     -o ExitOnForwardFailure=yes \
     -L "${EDGE_BIND}:${BROKER_LOCAL_PORT}:${VM_ADDR}:31883" \
     -R "127.0.0.1:${GATEWAY_REMOTE_PORT}:${EDGE_ADDR}:30080" \

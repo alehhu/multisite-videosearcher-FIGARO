@@ -189,67 +189,85 @@ a fresh pod is slower. These are the times to compare with `res_time_threshold`.
 
 ## 8. Run an experiment
 
-An experiment is one hour of load from Locust, on the cloud VM, against the edge gateway.
-Everything about a run ends up in one directory on your machine, `results/<run>/` (ignored
-by git: keep a backup of it):
+An experiment is a period of load from Locust, on the cloud VM, against the edge gateway
+(one hour; 15 minutes for a pilot). Scripts chain the steps; each one says in its header
+what it does, and everything can also be done by hand with the commands of the previous
+sections. Everything about a run ends up in one directory on your machine,
+`results/<run>/` (ignored by git: keep a backup of it):
 
 ```
 results/<run>/
-  logs/edge/, logs/cloud/   copies of /var/log/multisite of the two servers
+  run.yaml                  what was run: start, minutes, commit, agents, placement, load
+  logs/edge/, logs/cloud/   /var/log/multisite of the two servers, plus every minute the CPU
+                            and memory of every pod (top.csv) and, from the edge, the round
+                            trip through the bridge (bridge.csv)
   request_timestamps.csv    Locust: every request, send time and end-to-end response time
   workloadProfile.csv       Locust: the load it planned, requests per second
-  jobs.csv, stages.csv,     written by summarize_run.py --out (see below)
+  locust.log, monitor-cloud.log
+  jobs.csv, stages.csv,     written by summarize_run.py (see below)
   replicas.csv, agents.csv
   plots/                    written by the notebook
 ```
 
-### Before the run
+### Once
 
-1. **Code up to date.** After a `git pull` that changed the stages, the controller or the
-   agents, run `scripts/setup-site.sh` on each server (it rebuilds the images); otherwise
-   nothing to do.
-2. **Checks**, on each server:
+On your machine, the SSH hosts of the two servers (as you log in to them):
+
+```bash
+cp scripts/fetch.env.example scripts/fetch.env      # not tracked: fill in EDGE_SSH and CLOUD_SSH
+```
+
+### After a `git pull` that changed the code
+
+On each server, rebuild what changed and restart it (replicas, agents and placement stay):
+
+```bash
+scripts/rebuild-stages.sh                      # the stages that run on this site
+scripts/rebuild-stages.sh --all                # all six (keep them current for a placement change)
+scripts/rebuild-stages.sh timing-collector     # or any of gateway, timing-collector, local-controller
+```
+
+It checks at the end that the restarted stages run the worker of the checkout. For a
+change to the manifests or `site.env`, use `scripts/setup-site.sh` instead.
+
+### Before every run
+
+1. **The tunnel**, on the edge (step 3): it does not survive a night.
+2. **On each server**:
    ```bash
-   chronyc tracking | grep 'System time'     # well under 1 ms
-   kubectl get pods -n multisite              # all Running
+   scripts/prepare-run.sh             # --check: only the checks
    ```
-   and, on the edge, that the tunnel is up (step 3).
-3. **Clean up the previous run**, on each server, once its logs are saved (see "After the
-   run"):
-   ```bash
-   scripts/clean-ramdisk.sh --delete          # job directories (asks for sudo); seed/ and video.mp4 stay
-   sudo truncate -s 0 /var/log/multisite/*    # empty the logs
-   ```
-   Empty the log files with `truncate`, do not delete or move them: the controller keeps
-   `pods.csv` open. `summarize_run.py` takes the first job in the logs as the start of the
-   run, so logs left over from an earlier run would mix the two.
-4. **Restart the agents**, on each server, so that every run starts from freshly started
-   agents (same checkpoint, empty memory and logs):
-   ```bash
-   kubectl -n multisite rollout restart deployment -l tier=agent
-   kubectl -n multisite get pods -l tier=agent      # all 1/1 before starting the run
-   ```
-   The agents do not learn during a run, so this does not change their decisions.
-5. **Placement**, from the cloud VM:
+   It checks the clock, that `/mnt/ramdisk` is a tmpfs with the video and the seeds (also as
+   the pods see it), the pods, the disk, and the other site (the bridge from the edge, the
+   gateway through the tunnel from the cloud). If a check fails it stops, says what to do and
+   changes nothing. Otherwise it removes the pods that failed or were evicted, copies the
+   logs of the previous run to `~/runs/unsaved-<time>/` if they were not empty, empties
+   them (the controller keeps `pods.csv` open: emptied, not removed), removes the job
+   directories and restarts the agents, so that every run starts from freshly started
+   agents (they do not learn during a run: this does not change their decisions). It ends
+   by printing the placement in force.
+3. **The placement**, from the cloud VM, if it is not the one you want:
    ```bash
    .venv/bin/python scripts/placement.py publish placements/split-ffmpeg2.yaml --broker localhost:31883
-   .venv/bin/python scripts/placement.py show --broker localhost:31883
    ```
 
 ### The run
 
-On the cloud VM, in a `tmux` session (the run lasts one hour):
+In `tmux` on both servers, with the same name and minutes, the edge first:
 
 ```bash
-cd load/locust
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt     # once
-GATEWAY_HOST=localhost GATEWAY_PORT=38080 .venv/bin/locust -f locust_test.py --headless -u 1 -r 1 --run-time 60m
+scripts/monitor-run.sh <run> <minutes>          # on the edge
+scripts/run-experiment.sh <run> <minutes>       # on the cloud VM, right after
 ```
 
-Port 38080 is the edge gateway through the tunnel (step 3). Locust sends about 380 jobs:
-two 20-minute waves with no load in between, up to about 0.28 jobs/s. It stops after
-60 minutes even if jobs are still in the pipeline; they are not counted. It writes
-`request_timestamps.csv` and `workloadProfile.csv` in `load/locust/`.
+`run-experiment.sh` writes `run.yaml`, starts the same monitor for the cloud and runs
+Locust (installed the first time) on `localhost:38080`, the edge gateway through the tunnel.
+Locust's profile lasts one hour: two 20-minute waves with no load in between, up to about
+0.28 jobs/s, about 380 jobs; a shorter run takes its first minutes. Locust stops after the
+given minutes even if jobs are still in the pipeline; both monitors keep watching 5 more
+minutes, so that those jobs end up in the logs, then save the logs in
+`~/runs/<run>/<site>/`. A monitor stopped with Ctrl-c saves them too. The edge monitor
+prints a warning when the probes through the bridge are lost: the tunnel is down.
 
 A single job by hand, to check the pipeline:
 
@@ -260,26 +278,13 @@ curl -X POST http://localhost:38080/workflow/invoke/videosearcher_workflow \
 
 ### After the run
 
-1. **Save the logs on each server**, with the site's name (`edge` or `cloud`):
+1. **On your machine**, when both monitors have saved their logs:
    ```bash
-   mkdir -p ~/runs/<run>/<site> && cp /var/log/multisite/* ~/runs/<run>/<site>/
+   scripts/fetch-run.sh <run>
    ```
-   and, on the cloud VM, Locust's files:
-   ```bash
-   cp load/locust/request_timestamps.csv load/locust/workloadProfile.csv ~/runs/<run>/
-   ```
-2. **Copy them to your machine**, into the repository (the SSH hosts are the ones you log in
-   with, jump hosts included):
-   ```bash
-   mkdir -p results/<run>/logs
-   scp -r <edge-ssh-host>:runs/<run>/edge results/<run>/logs/
-   scp -r <cloud-ssh-host>:runs/<run>/cloud results/<run>/logs/
-   scp '<cloud-ssh-host>:runs/<run>/*.csv' results/<run>/
-   ```
-3. **Summarise and check the run:**
-   ```bash
-   .venv/bin/python scripts/summarize_run.py results/<run>/logs/edge results/<run>/logs/cloud --out results/<run>
-   ```
+   It copies the run into `results/<run>/` and runs `scripts/summarize_run.py` on it with the
+   duration of `run.yaml`, writing the CSV files used by the notebook.
+
    The run lasts `--duration` seconds (default 3600) from its first job: only what ends
    inside it counts, and the jobs still in the pipeline at the end are reported apart. It
    prints the jobs sent, completed, failed and duplicated; per 5 minutes the job duration
@@ -299,7 +304,7 @@ curl -X POST http://localhost:38080/workflow/invoke/videosearcher_workflow \
    pod, service time, wait, files and bytes written), `replicas.csv` (replicas of every stage on every site, every
    5 s) and `agents.csv` (every observation window: the state, what the agent received, its
    answer, the replicas applied).
-4. **Plots and tables:** `analysis/run_analysis.ipynb`. The first time:
+2. **Plots and tables:** `analysis/run_analysis.ipynb`. The first time:
    ```bash
    python3 -m venv analysis/.venv && analysis/.venv/bin/pip install -r analysis/requirements.txt
    ```
@@ -311,8 +316,7 @@ curl -X POST http://localhost:38080/workflow/invoke/videosearcher_workflow \
    to compare them) and run all the cells. Each section says what its plot shows and how
    to read it; the figures are also saved as PNG under `results/<run>/plots/`. Section 5 is
    the profiling: the service time of every stage and the thresholds it implies.
-5. **Before the next run**, clean up and restart the agents as in "Before the run",
-   steps 3 and 4.
+3. **Before the next run**, `scripts/prepare-run.sh` on each server again: it cleans up.
 
 ### The logs
 

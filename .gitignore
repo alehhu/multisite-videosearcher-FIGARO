@@ -10,5 +10,6 @@ results/
 tests/integration/.run/
 # local settings
 scripts/tunnel.env
+scripts/fetch.env
 # sources fetched by the scripts
 .cache/
