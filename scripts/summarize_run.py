@@ -181,6 +181,29 @@ def service_times(completed):
     return times
 
 
+def stage_outputs(completed):
+    """{stage: [(job_id, files, bytes)]} of the completed jobs whose record lists the outputs."""
+    outputs = {}
+    for record in completed:
+        for stage, files in (record.get("outputs") or {}).items():
+            outputs.setdefault(stage, []).append((record["job_id"], len(files), sum(files.values())))
+    return outputs
+
+
+def odd_outputs(outputs, ratio=0.5):
+    """Stages that wrote nothing, or less than `ratio` times their median size: [(stage, job_id, files, bytes)].
+
+    The last stage is left out: grep removes the job directory and its output is the result.
+    """
+    odd = []
+    for stage, items in outputs.items():
+        if stage == STAGES[-1]:
+            continue
+        median_bytes = statistics.median(b for _, _, b in items)
+        odd += [(stage, job_id, n, b) for job_id, n, b in items if n == 0 or b < ratio * median_bytes]
+    return sorted(odd)
+
+
 def unique_jobs(timing):
     seen, jobs = set(), []
     for record in timing:
@@ -221,15 +244,18 @@ def export(out, logs, start, end):
                          rel(received, start), rel(finished, start),
                          round(finished - received, 4) if received and finished else None,
                          int(r["logged_at"] <= end)])
+        outputs = r.get("outputs") or {}
         for s in r["stages"]:
+            files = outputs.get(s["stage"])
             stage_rows.append([r["job_id"], s["stage"], s.get("site"), s.get("pod"), s.get("placement_version"),
                                rel(s["start"], start), rel(s["end"], start), round(s["duration"], 4),
-                               s.get("wait") and round(s["wait"], 4), s.get("seed_copy") and round(s["seed_copy"], 4)])
+                               s.get("wait") and round(s["wait"], 4), s.get("seed_copy") and round(s["seed_copy"], 4),
+                               None if files is None else len(files), None if files is None else sum(files.values())])
     write_csv(os.path.join(out, "jobs.csv"),
               ["job_id", "outcome", "failed_stage", "arrival", "end", "duration", "ended_in_run"], job_rows)
     write_csv(os.path.join(out, "stages.csv"),
               ["job_id", "stage", "site", "pod", "placement_version", "start", "end", "service_time",
-               "wait", "seed_copy"], stage_rows)
+               "wait", "seed_copy", "output_files", "output_bytes"], stage_rows)
 
     replica_rows = sorted([rel(row["timestamp"], start), row["site"], row["stage"], row["placed_here"],
                            row["draining"], row["desired"], row["ready"], row["alive"], row["terminating"],
@@ -303,6 +329,21 @@ def main():
                 print(f"  {stage:<11} {site:<6} {len(values):>5} {mean(values):>8.3f} {std:>7.3f} "
                       f"{percentile(values, 0.05):>8.3f} {percentile(values, 0.5):>8.3f} {percentile(values, 0.95):>8.3f}")
 
+    outputs = stage_outputs(completed)
+    odd = odd_outputs(outputs) if outputs else []
+    print("\nOutput of each stage (files it wrote in the job directory, completed jobs):")
+    if not outputs:
+        print("  not recorded in these logs")
+    for stage in STAGES:
+        if stage in outputs:
+            items = outputs[stage]
+            files = [n for _, n, _ in items]
+            sizes = [b / 1e6 for _, _, b in items]
+            print(f"  {stage:<11} n={len(items):<5} files {min(files)}-{max(files)}  "
+                  f"MB median={statistics.median(sizes):.3f} min={min(sizes):.3f} max={max(sizes):.3f}")
+    for stage, job_id, n, b in odd:
+        print(f"  odd: {stage} of {job_id} wrote {n} files, {b} bytes")
+
     decisions = agent_decisions(logs["observations"], start, end)
     errors = 0
     print("\nAgents (minute: replicas before -> applied):")
@@ -331,6 +372,8 @@ def main():
         ("every agent answered", errors == 0),
         ("replicas became ready in time", not slow),
     ]
+    if outputs:  # older logs do not record them
+        checks.append(("every stage wrote its output", not odd))
     if args.out:
         written = export(args.out, logs, start, end)
         print(f"\nWritten to {args.out}: " + ", ".join(f"{name} ({n} rows)" for name, n in written.items()))

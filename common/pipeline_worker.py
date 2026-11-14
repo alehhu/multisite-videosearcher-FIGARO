@@ -9,6 +9,8 @@ ramdisk, and a job arriving from the other site gets its input from the local se
 A worker removes the job directory when the job leaves its site: the files on a ramdisk
 count against the memory limit of the pod that wrote them, so they must not pile up.
 What stays after a failure or a crash is removed by scripts/clean-ramdisk.sh.
+Since the files go, the message records what each stage wrote: `outputs[<stage>]` maps
+every file the stage created or changed in the job directory to its size in bytes.
 """
 
 import json
@@ -22,6 +24,26 @@ import traceback
 
 import multisite
 from multisite import GROUPS, STAGES, Placement
+
+
+
+def files_in(directory):
+    """{relative path: (size, mtime)} of the files under `directory` ({} if it does not exist)."""
+    found = {}
+    for root, _, names in os.walk(directory):
+        for name in names:
+            path = os.path.join(root, name)
+            try:
+                st = os.stat(path)
+            except OSError:  # removed meanwhile
+                continue
+            found[os.path.relpath(path, directory)] = (st.st_size, st.st_mtime_ns)
+    return found
+
+
+def written_since(before, after):
+    """{relative path: size} of the files created or changed between two `files_in` calls."""
+    return {path: size for path, (size, mtime) in sorted(after.items()) if before.get(path) != (size, mtime)}
 
 
 class PipelineWorker:
@@ -209,6 +231,7 @@ class PipelineWorker:
             if self.seed_capture and self.stage != STAGES[0]:
                 self._capture_seed(job_dir)
 
+            before = files_in(job_dir)
             ts[f"{self.group}_start"] = time.time()
             params = self.handler_fn(params, context={})
         except Exception as exc:
@@ -216,6 +239,9 @@ class PipelineWorker:
                      "traceback": traceback.format_exc()}
             print(f"[{self.stage}@{self.site}] job {params.get('dir')} failed: {exc}", flush=True)
         ts[f"{self.group}_end"] = time.time()
+        if error is None:
+            # After the end timestamp: listing the files is not part of the service time.
+            params.setdefault("outputs", {})[self.stage] = written_since(before, files_in(job_dir))
 
         # Normally already known: see _on_connect.
         self.placement_known.wait()

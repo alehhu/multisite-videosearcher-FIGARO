@@ -122,6 +122,7 @@ def on_message(client, userdata, msg, props=None):
         "pods": payload.get("pods", {}),
         "placement_versions": payload.get("placement_versions", {}),
         "error": payload.get("error"),
+        "outputs": payload.get("outputs", {}),
         "stages": stage_records,
         "durations": durations,
     }

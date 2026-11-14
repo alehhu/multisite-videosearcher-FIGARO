@@ -13,7 +13,7 @@ from multisite import STAGES  # noqa: E402
 START, END = 1000.0, 4600.0
 
 
-def job(job_id, received, logged_at, sites=None, wait=0.01, topic="pipeline/edge/done", error=None):
+def job(job_id, received, logged_at, sites=None, wait=0.01, topic="pipeline/edge/done", error=None, outputs=None):
     sites = sites or {s: "edge" for s in STAGES}
     stages, t = [], received
     for stage in STAGES:
@@ -22,7 +22,7 @@ def job(job_id, received, logged_at, sites=None, wait=0.01, topic="pipeline/edge
         t += wait + 1
     return {"job_id": job_id, "topic": topic, "logged_at": logged_at, "error": error,
             "timestamps": {"gateway_received": received}, "sites": {"gateway": "edge", **sites},
-            "stages": stages}
+            "stages": stages, "outputs": outputs or {}}
 
 
 def window(t, arrivals, window_s=120.0):
@@ -98,6 +98,7 @@ def test_export_writes_the_csv_files(tmp_path):
     assert float(jobs[0]["duration"]) == pytest.approx(6 * 1.01)
     first = read("stages.csv")[0]
     assert (first["stage"], first["site"], first["service_time"], first["wait"]) == ("ffmpeg0", "edge", "1", "0.01")
+    assert (first["output_files"], first["output_bytes"]) == ("", "")   # not recorded in these logs
     assert read("replicas.csv")[0]["t"] == "5.0"
     row = read("agents.csv")[0]
     assert (row["t"], row["pressure"], row["obs_pressure"], row["applied"]) == ("120.0", "0.5", "0.17", "3")
@@ -112,3 +113,22 @@ def test_pods_are_read_with_or_without_the_header(tmp_path, header):
     path.write_text("\n".join(lines) + "\n")
     rows = summarize_run.read_pods(str(path))
     assert len(rows) == 1 and rows[0]["stage"] == "ffmpeg0" and rows[0]["ready"] == "2"
+
+
+def outputs_of(size_ffmpeg2=300):
+    files = {stage: {f"{stage}.tar.gz": 100} for stage in STAGES[:-1]}
+    files["ffmpeg2"] = {f"out_{i}.tar.gz": size_ffmpeg2 // 3 for i in range(3)}
+    files[STAGES[-1]] = {}
+    return files
+
+
+def test_outputs_per_stage_and_odd_ones():
+    jobs = [job(f"j{i}", 1000 + i, 1100, outputs=outputs_of()) for i in range(4)]
+    jobs.append(job("small", 1010, 1100, outputs=outputs_of(size_ffmpeg2=60)))
+    jobs.append(job("empty", 1011, 1100, outputs={**outputs_of(), "librosa": {}}))
+    outputs = summarize_run.stage_outputs(jobs)
+    assert outputs["ffmpeg2"][0] == ("j0", 3, 300)
+    odd = summarize_run.odd_outputs(outputs)
+    assert ("ffmpeg2", "small", 3, 60) in odd and ("librosa", "empty", 0, 0) in odd
+    assert all(stage != STAGES[-1] for stage, *_ in odd)   # grep writes nothing by design
+    assert len(odd) == 2

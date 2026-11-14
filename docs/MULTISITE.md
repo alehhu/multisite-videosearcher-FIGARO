@@ -285,13 +285,16 @@ curl -X POST http://localhost:38080/workflow/invoke/videosearcher_workflow \
    prints the jobs sent, completed, failed and duplicated; per 5 minutes the job duration
    and the wait of every stage; the waits of the hops between the sites; the service time of
    every stage on every site; the decisions of the agents and the replicas that stayed not
-   ready. It ends with four checks (no failed job, no duplicate, every agent answered,
-   replicas ready in time) and exits with an error if one fails: then the run is to be
-   looked at before being used.
+   ready; the files each stage wrote (count and size, from the job's record). It ends with
+   five checks (no failed job, no duplicate, every agent answered, replicas ready in time,
+   every stage wrote its output) and exits with an error if one fails: then the run is to
+   be looked at before being used. A stage "did not write its output" when it wrote no file,
+   or less than half the median size of that stage: the inputs are the same video every
+   time, so the outputs should have the same size.
 
    With `--out` it writes the CSV files used by the notebook, times in seconds from the start
    of the run: `jobs.csv` (one row per job), `stages.csv` (one row per job and stage: site,
-   pod, service time, wait), `replicas.csv` (replicas of every stage on every site, every
+   pod, service time, wait, files and bytes written), `replicas.csv` (replicas of every stage on every site, every
    5 s) and `agents.csv` (every observation window: the state, what the agent received, its
    answer, the replicas applied).
 4. **Plots and tables:** `analysis/run_analysis.ipynb`. The first time:

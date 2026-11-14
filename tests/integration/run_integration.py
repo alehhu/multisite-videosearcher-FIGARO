@@ -264,6 +264,12 @@ def check(results, sent, tables, ramdisks):
                 if used_seed != (sites[prev] != sites[stage]):
                     errors.append(f"{job}: seed used={used_seed} for {stage} ({sites[prev]}->{sites[stage]})")
             sender = stage
+        # Each fake stage writes <stage>.out; grep removes the directory and writes nothing.
+        outputs = p.get("outputs", {})
+        for stage in STAGES:
+            expected = {} if stage == STAGES[-1] else {f"{stage}.out": len(job)}
+            if outputs.get(stage) != expected:
+                errors.append(f"{job}: {stage} recorded outputs {outputs.get(stage)}, expected {expected}")
         # Once the job is done, only the site where it ended may still have its directory.
         for site, ramdisk in ramdisks.items():
             if site != sites[STAGES[-1]] or site != sites["gateway"]:

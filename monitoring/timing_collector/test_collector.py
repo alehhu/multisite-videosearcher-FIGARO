@@ -116,6 +116,7 @@ def test_on_message_builds_record_with_group_and_stage_durations(monkeypatch):
 
     payload = {
         "dir": "job-3",
+        "outputs": {"ffmpeg0": {"video_ffmpeg_0_output.tar.gz": 1234}},
         "timestamps": {
             "groupA_start": 100.0,
             "groupA_end": 101.25,
@@ -136,6 +137,7 @@ def test_on_message_builds_record_with_group_and_stage_durations(monkeypatch):
     assert record["durations"]["ffmpeg0"] == 1.25
     assert record["durations"]["groupB"] == 0.5
     assert record["durations"]["librosa"] == 0.5
+    assert record["outputs"] == {"ffmpeg0": {"video_ffmpeg_0_output.tar.gz": 1234}}
 
 
 def test_on_connect_subscribes_to_configured_topic(monkeypatch):
