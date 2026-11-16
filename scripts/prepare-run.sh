@@ -119,10 +119,11 @@ scripts/clean-ramdisk.sh --delete
 
 if [[ "$AGENTS" == "true" ]]; then
     step "Restarting the agents"
-    kubectl -n "$NS" rollout restart deployment -l tier=agent >/dev/null
+    # One at a time: an agent (Ray) takes a lot of memory while it starts, and starting
+    # them all together has made the server unreachable. Those at 0 stay at 0.
     for d in $(kubectl -n "$NS" get deployment -l tier=agent -o name); do
-        # Agents scaled to 0 by hand stay at 0: nothing to wait for.
         if [[ "$(replicas "${d#deployment.apps/}")" -gt 0 ]]; then
+            kubectl -n "$NS" rollout restart "$d" >/dev/null
             kubectl -n "$NS" rollout status "$d" --timeout=600s
         fi
     done

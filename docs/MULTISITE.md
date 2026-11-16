@@ -158,6 +158,18 @@ per sample; then the mean of the samples of the window. A stage with no samples 
 window is not asked. `observations.jsonl` also keeps, under `per_job`, the same times
 averaged over the jobs of the window, for the analysis.
 
+An agent whose stage does not run on a site can be stopped there, to save memory (each
+one runs Ray and PyTorch):
+
+```bash
+kubectl -n multisite scale deploy agent-deepspeech agent-grep --replicas=0
+```
+
+It stays at 0 when the manifests are applied again (they do not set `replicas`), except
+the first time they are applied after that change, which brings every agent back to 1:
+scale them down again then. `prepare-run.sh` restarts the agents one at a time and leaves
+those at 0 alone.
+
 The controller scales the stage to the `action` in the reply, kept between
 the `min` and `max` of the stage's `agent` block in `deploy/k8s/base/controller-config.yaml`.
 If the agent does not answer, the replicas stay as they are. A stage that is being moved
